@@ -1186,9 +1186,30 @@ void MainWindow::ensureWorld()
         if (!archive->open(archivePath)) {
             return {nullptr, nullptr, nullptr, archive->errorString(), {}};
         }
-        const QString signature = fh1::WorldIndex::archiveSignature(archivePath);
+        // The PVS file holds the texture tables and, with the zone files,
+        // where props are placed.
+        QByteArray pvs;
+        QString pvsError = QStringLiteral("the track has no PVS file");
+        if (!pvsPath.isEmpty()) {
+            QFile file(pvsPath);
+            if (file.open(QIODevice::ReadOnly)) {
+                pvs = file.readAll();
+            } else {
+                pvsError = file.errorString();
+            }
+        }
+        const QString signature = fh1::WorldIndex::archiveSignature(archivePath) + QLatin1Char('|')
+            + fh1::WorldIndex::archiveSignature(pvsPath);
         std::optional<fh1::WorldIndex> index = fh1::WorldIndex::load(cachePath, signature);
         if (!index) {
+            std::optional<fh1::TrackPlacements> placements;
+            if (!pvs.isEmpty()) {
+                QString placementError;
+                placements = fh1::TrackPlacements::load(pvs, *archive, cancel.get(), &placementError);
+                if (!placements && !cancel->load()) {
+                    std::fprintf(stderr, "Props are not placed: %s\n", qPrintable(placementError));
+                }
+            }
             index = fh1::WorldIndex::build(
                 *archive,
                 [guard](int done, int total) {
@@ -1203,7 +1224,7 @@ void MainWindow::ensureWorld()
                         },
                         Qt::QueuedConnection);
                 },
-                cancel.get());
+                cancel.get(), placements ? &*placements : nullptr);
             if (!index) {
                 return {nullptr, nullptr, nullptr, QStringLiteral("cancelled"), {}};
             }
@@ -1213,15 +1234,9 @@ void MainWindow::ensureWorld()
             }
         }
         std::shared_ptr<const fh1::TrackTextures> textures;
-        QString textureError;
-        if (pvsPath.isEmpty()) {
-            textureError = QStringLiteral("the track has no PVS file");
-        } else {
-            QFile pvs(pvsPath);
-            if (!pvs.open(QIODevice::ReadOnly)) {
-                textureError = pvs.errorString();
-            } else if (std::optional<fh1::TrackTextures> loaded
-                = fh1::TrackTextures::load(pvs.readAll(), *archive, &textureError)) {
+        QString textureError = pvsError;
+        if (!pvs.isEmpty()) {
+            if (std::optional<fh1::TrackTextures> loaded = fh1::TrackTextures::load(pvs, *archive, &textureError)) {
                 textures = std::make_shared<const fh1::TrackTextures>(std::move(*loaded));
             }
         }
@@ -1255,9 +1270,12 @@ void MainWindow::onWorldLoaded()
     }
     m_world3D->setWorld(result.archive, result.index, result.textures);
     placeWorldCamera();
-    QString message = tr("3D world: %1 meshes; %2 prop models are not placed yet")
+    QString message = tr("3D world: %1 meshes, %2 of them placed props")
                           .arg(result.index->chunks().size())
-                          .arg(result.index->localModelCount());
+                          .arg(result.index->placedCount());
+    if (result.index->localModelCount() > 0) {
+        message += tr("; %n prop model(s) have no placement", nullptr, result.index->localModelCount());
+    }
     if (!result.textures) {
         message += tr("; no game textures (%1)").arg(result.textureError);
     }

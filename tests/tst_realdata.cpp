@@ -5,6 +5,7 @@
 #include "GameInstall.h"
 #include "MapLoader.h"
 #include "RenderMesh.h"
+#include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
 
@@ -154,7 +155,8 @@ private slots:
         const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive);
         QVERIFY(index.has_value());
         // 102,012 model entries hold 14,291 distinct models; about 2,300 are
-        // local-space props and a few dozen are cages and shadow casters.
+        // local-space props (not placed without the zone files) and a few
+        // dozen are cages and shadow casters.
         QVERIFY2(index->chunks().size() > 11500 && index->chunks().size() < 12500,
             qPrintable(QString::number(index->chunks().size())));
         QVERIFY(index->localModelCount() > 2000 && index->localModelCount() < 2600);
@@ -174,6 +176,48 @@ private slots:
             QVERIFY(!mesh.parts.empty());
             QVERIFY2(!mesh.materialTable.empty(), qPrintable(entry.name));
         }
+    }
+
+    void propPlacements()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        fh1::ForzaZip archive;
+        QVERIFY(archive.open(install.resolve(QStringLiteral("tracks/colorado/bin.zip"))));
+        QFile pvs(install.trackPvsPath(QStringLiteral("colorado")));
+        QVERIFY(pvs.open(QIODevice::ReadOnly));
+        QString error;
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvs.readAll(), archive, nullptr, &error);
+        QVERIFY2(placements.has_value(), qPrintable(error));
+        // Every distinct zone file reads to its end.
+        QCOMPARE(placements->zoneCount(), 1434);
+        QCOMPARE(placements->failedZones(), 0);
+        QCOMPARE(placements->drawCount(), std::size_t{62173});
+        int placed = 0;
+        for (std::size_t d = 0; d < placements->drawCount(); ++d) {
+            placed += placements->placement(d) != nullptr ? 1 : 0;
+        }
+        QVERIFY2(placed > 59000, qPrintable(QString::number(placed)));
+
+        // Obj17026 of CollObjs.xml, a marker pole (render object 701).
+        const fh1::Placement* pole = nullptr;
+        for (std::size_t d = 0; d < placements->drawCount() && pole == nullptr; ++d) {
+            const fh1::Placement* p = placements->placement(d);
+            if (placements->drawObject(d) == 701 && p != nullptr
+                && (p->position - QVector3D(-1670.525F, 12.5432F, -1207.935F)).length() < 0.01F) {
+                pole = p;
+            }
+        }
+        QVERIFY(pole != nullptr);
+        const QVector3D xAxis = pole->apply(QVector3D(1, 0, 0)) - pole->position;
+        QVERIFY((xAxis - QVector3D(0.163759F, 0, 0.9865F)).length() < 0.01F);
+
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(index.has_value());
+        QVERIFY2(index->placedCount() > 45000, qPrintable(QString::number(index->placedCount())));
+        // Only a few hundred prop models are never placed.
+        QVERIFY2(index->localModelCount() < 1000, qPrintable(QString::number(index->localModelCount())));
     }
 
     void textureTables()

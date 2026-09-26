@@ -44,6 +44,8 @@ add_library(fh1core STATIC
     src/core/RenderMesh.h
     src/core/StringTable.cpp
     src/core/StringTable.h
+    src/core/TrackPlacements.cpp
+    src/core/TrackPlacements.h
     src/core/TrackTextures.cpp
     src/core/TrackTextures.h
     src/core/WorldIndex.cpp

@@ -2,6 +2,7 @@
 #include "ForzaZip.h"
 #include "Loaders.h"
 #include "RenderMesh.h"
+#include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldDebugPanel.h"
 #include "WorldIndex.h"
@@ -239,7 +240,8 @@ QByteArray shaderObject(const QList<quint32>& inputs)
 
 /// A PVS file whose texture records hold `textureIds` and whose objects list
 /// record numbers.
-QByteArray pvsFile(const QList<quint32>& textureIds, const QList<QList<quint32>>& objects)
+QByteArray pvsFile(const QList<quint32>& textureIds, const QList<QList<quint32>>& objects,
+    const QList<quint16>& drawObjects = {0x5555})
 {
     QByteArray d("FPVS");
     be32(d, 0x32);
@@ -264,8 +266,11 @@ QByteArray pvsFile(const QList<quint32>& textureIds, const QList<QList<quint32>>
     be32(d, 1);
     be32(d, 8);
     d.append("h_diff_1");
-    be32(d, 1);
-    d.append(QByteArray(18, '\x55'));
+    be32(d, static_cast<quint32>(drawObjects.size()));
+    for (quint16 object : drawObjects) {
+        be16(d, object);
+        d.append(QByteArray(16, '\x55'));
+    }
     be32(d, static_cast<quint32>(objects.size()));
     for (const QList<quint32>& records : objects) {
         be32(d, static_cast<quint32>(records.size()));
@@ -279,6 +284,75 @@ QByteArray pvsFile(const QList<quint32>& textureIds, const QList<QList<quint32>>
         }
     }
     d.append("more tables");
+    return d;
+}
+
+/// IEEE 754 half-precision bits of `value`, for the values tests use (whole
+/// numbers and simple fractions, which half floats hold exactly).
+quint16 halfBits(float value)
+{
+    if (value == 0.0F) {
+        return 0;
+    }
+    const quint16 sign = value < 0.0F ? 0x8000 : 0;
+    int exponent = 0;
+    const float fraction = std::frexp(std::abs(value), &exponent); // value = fraction * 2^exponent
+    const auto mantissa = static_cast<quint16>(std::lround((fraction * 2.0F - 1.0F) * 1024.0F));
+    return static_cast<quint16>(sign | ((exponent - 1 + 15) << 10) | mantissa);
+}
+
+struct TestPlacement {
+    quint16 draw = 0;
+    QVector3D position;
+    std::array<float, 9> rows{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    std::array<float, 3> ranges{-1, -1, -1};
+};
+
+/// A zone file in the layout TrackPlacements documents, with a few entries
+/// in the sections the reader skips.
+QByteArray zoneFile(const QList<TestPlacement>& placements)
+{
+    QByteArray d;
+    be32(d, static_cast<quint32>(placements.size()));
+    for (const TestPlacement& p : placements) {
+        be32(d, 0x80000000U | p.draw);
+    }
+    be32(d, 2);
+    be16(d, 7);
+    be16(d, 8);
+    be32(d, 1);
+    d.append(QByteArray(16, '\x11'));
+    be32(d, 1);
+    be32(d, 0x22222222);
+    be32(d, 1);
+    d.append('\x33');
+    be32(d, 1);
+    be16(d, 9);
+    be32(d, 1);
+    be32(d, 0x44444444);
+    be32(d, 1);
+    d.append('\x55');
+    be32(d, 0);
+    be32(d, static_cast<quint32>(placements.size()));
+    d.append(QByteArray(placements.size(), '\x66'));
+    be32(d, static_cast<quint32>(placements.size()));
+    for (const TestPlacement& p : placements) {
+        for (float range : p.ranges) {
+            be16(d, halfBits(range));
+        }
+        beFloat(d, p.position.x());
+        beFloat(d, p.position.y());
+        beFloat(d, p.position.z());
+        for (float value : p.rows) {
+            be16(d, halfBits(value));
+        }
+        d.append(QByteArray(16, '\0'));
+        d.append('\x01'); // one extra block
+        be32(d, 0xA8);
+        d.append('\x02');
+        d.append("xy", 2);
+        d.append(QByteArray(32, '\x77'));
+    }
     return d;
 }
 
@@ -575,6 +649,147 @@ private slots:
         QCOMPARE(entries->size(), std::size_t{1});
         QCOMPARE(entries->front().record, 7u);
         QCOMPARE(entries->front().offset, qsizetype{32});
+    }
+
+    void readsZonePlacements()
+    {
+        const TestPlacement first{
+            3, QVector3D(-1670.5F, 12.5F, -1207.75F), {0.5F, 0, 1, 0, 1, 0, 1, 0, -0.5F}, {150, 300, 500}};
+        const TestPlacement second{7, QVector3D(10, 20, 30)};
+        QString error;
+        const auto placements = fh1::TrackPlacements::readZone(zoneFile({first, second}), &error);
+        QVERIFY2(placements.has_value(), qPrintable(error));
+        QCOMPARE(placements->size(), std::size_t{2});
+        QCOMPARE((*placements)[0].first, 3u);
+        QCOMPARE((*placements)[1].first, 7u);
+        const fh1::Placement& p = (*placements)[0].second;
+        QCOMPARE(p.position, first.position);
+        QCOMPARE(p.rows, first.rows);
+        QCOMPARE(p.ranges, first.ranges);
+        QCOMPARE((*placements)[1].second.ranges, (std::array<float, 3>{-1, -1, -1}));
+
+        QByteArray truncated = zoneFile({first, second});
+        truncated.chop(10);
+        QVERIFY(!fh1::TrackPlacements::readZone(truncated, &error).has_value());
+        QByteArray mismatch = zoneFile({first});
+        mismatch[3] = 2; // two draws, one transform record
+        QVERIFY(!fh1::TrackPlacements::readZone(mismatch, &error).has_value());
+    }
+
+    void appliesPlacements()
+    {
+        // World-space models are placed by an identity with Z mirrored,
+        // which reproduces the parser's own coordinates.
+        fh1::Placement asStored;
+        asStored.rows = {1, 0, 0, 0, 1, 0, 0, 0, -1};
+        QCOMPARE(asStored.apply(QVector3D(3, 4, 5)), QVector3D(3, 4, 5));
+
+        // A marker pole from CollObjs.xml: its XAxis (0.164, 0, 0.986) is
+        // row 0 and its ZAxis (-0.986, 0, 0.164), negated, row 2.
+        fh1::Placement pole;
+        pole.position = QVector3D(-1670.525F, 12.5432F, -1207.935F);
+        pole.rows = {0.164F, 0, 0.986F, 0, 1, 0, 0.986F, 0, -0.164F};
+        // Differences of large coordinates keep about three decimals.
+        const QVector3D alongX = pole.apply(QVector3D(1, 0, 0)) - pole.position;
+        QVERIFY((alongX - QVector3D(0.164F, 0, 0.986F)).length() < 1e-3F);
+        // Row 2 is the negated Z axis, and the parser negated the file's Z,
+        // so the parsed model's Z maps to the XML's ZAxis.
+        const QVector3D alongZ = pole.apply(QVector3D(0, 0, 1)) - pole.position;
+        QVERIFY((alongZ - QVector3D(-0.986F, 0, 0.164F)).length() < 1e-3F);
+        QCOMPARE(pole.apply(QVector3D(0, 2, 0)), pole.position + QVector3D(0, 2, 0));
+    }
+
+    void placesPropsFromZones()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        // A sign modelled around its own origin, at two levels of detail, a
+        // bench that is never placed, and ground.
+        const QByteArray signNear = renderModel({quad(QStringLiteral("Sign_LOD00"), 0, 0, 0, 1)});
+        const QByteArray signFar = renderModel({quad(QStringLiteral("Sign_LOD01"), 0, 0, 0, 1)});
+        const QByteArray bench = renderModel({quad(QStringLiteral("Bench_LOD00"), 0, 0, 0, 1)});
+        const QByteArray ground = renderModel({quad(QStringLiteral("Terrain_LOD00_01"), 600, 600, 0, 100)});
+        // Draws: 0 = sign LOD00 (in no zone), 1 = sign LOD01, 2 = sign LOD00
+        // of a second sign, 3 = sign LOD01 of it.
+        const QList<quint16> draws{1, 2, 1, 2};
+        const std::array<float, 9> quarterTurn{0, 0, -1, 0, 1, 0, -1, 0, 0};
+        const TestPlacement a{1, QVector3D(500, 10, 500), quarterTurn, {50, 200, -1}};
+        const TestPlacement b{2, QVector3D(520, 12, 510), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {50, 200, -1}};
+        const TestPlacement c{3, b.position, b.rows, b.ranges};
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"), ground},
+                {QStringLiteral("coloradoout.00001.rmb.bin"), signNear},
+                {QStringLiteral("coloradoout.00002.rmb.bin"), signFar},
+                {QStringLiteral("coloradoout.00003.rmb.bin"), bench},
+                {QStringLiteral("__R00Z00000.pvsz"), zoneFile({a, b})},
+                // Zones overlap: the second repeats draw 2 and adds draw 3.
+                {QStringLiteral("__R00Z00001.pvsz"), zoneFile({b, c})},
+                {QStringLiteral("__r00z00001.pvsz"), zoneFile({b, c})}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        QString error;
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}, {}}, draws), archive, nullptr, &error);
+        QVERIFY2(placements.has_value(), qPrintable(error));
+        QCOMPARE(placements->zoneCount(), 2);
+        QCOMPARE(placements->failedZones(), 0);
+        QCOMPARE(placements->drawCount(), std::size_t{4});
+        QVERIFY(placements->placement(0) == nullptr);
+        QVERIFY(placements->placement(1) != nullptr);
+        QCOMPARE(placements->placement(3)->position, c.position);
+
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(index.has_value());
+        // The ground and four sign draws; the bench, never placed, is
+        // counted.
+        QCOMPARE(index->placedCount(), 4);
+        QCOMPARE(index->chunks().size(), std::size_t{5});
+        QCOMPARE(index->localModelCount(), 1);
+        std::vector<const fh1::WorldChunk*> signs;
+        for (const fh1::WorldChunk& chunk : index->chunks()) {
+            if (chunk.placed) {
+                signs.push_back(&chunk);
+            }
+        }
+        // Draw 0 borrowed the transform of draw 1, the same sign's LOD01.
+        QCOMPARE(signs[0]->placement.position, a.position);
+        QCOMPARE(signs[0]->lod, std::int8_t{0});
+        QCOMPARE(signs[0]->bandStart, 0.0F);
+        QCOMPARE(signs[0]->bandEnd, 50.0F);
+        QCOMPARE(signs[1]->bandStart, 50.0F);
+        QCOMPARE(signs[1]->bandEnd, 200.0F);
+        // A 2 m sign, turned a quarter, around its position.
+        QVERIFY(signs[0]->boundsMin.x() >= 498.9F && signs[0]->boundsMax.x() <= 501.1F);
+        QVERIFY(signs[0]->boundsMin.z() >= 498.9F && signs[0]->boundsMax.z() <= 501.1F);
+
+        const QString cache = dir.filePath(QStringLiteral("world.index"));
+        QVERIFY(index->save(cache, QStringLiteral("sig")));
+        const std::optional<fh1::WorldIndex> reloaded = fh1::WorldIndex::load(cache, QStringLiteral("sig"));
+        QVERIFY(reloaded.has_value());
+        QCOMPARE(reloaded->placedCount(), 4);
+        for (std::size_t i = 0; i < index->chunks().size(); ++i) {
+            QCOMPARE(reloaded->chunks()[i].placement.position, index->chunks()[i].placement.position);
+            QCOMPARE(reloaded->chunks()[i].placement.rows, index->chunks()[i].placement.rows);
+            QCOMPARE(reloaded->chunks()[i].bandEnd, index->chunks()[i].bandEnd);
+        }
+
+        // Tile building places the sign's vertices.
+        const auto signIndex = static_cast<std::uint32_t>(signs[0] - index->chunks().data());
+        const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, {signIndex});
+        QCOMPARE(mesh.failedChunks, 0);
+        QCOMPARE(mesh.vertexCount(), std::size_t{4});
+        for (std::size_t v = 0; v < mesh.vertexCount(); ++v) {
+            const float* vertex = mesh.vertices.data() + v * fh1::TileMesh::kFloatsPerVertex;
+            QVERIFY((QVector3D(vertex[0], vertex[1], vertex[2]) - a.position).length() < 1.5F);
+            // Still facing up after the turn.
+            QVERIFY(vertex[4] > 0.99F);
+        }
+
+        // Without placements, props are only counted.
+        const std::optional<fh1::WorldIndex> unplaced = fh1::WorldIndex::build(archive);
+        QVERIFY(unplaced.has_value());
+        QCOMPARE(unplaced->placedCount(), 0);
+        QCOMPARE(unplaced->localModelCount(), 3);
     }
 
     void encodesDxtAndBuildsMipChains()

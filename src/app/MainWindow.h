@@ -3,6 +3,7 @@
 #include "ForzaZip.h"
 #include "GameInstall.h"
 #include "MapData.h"
+#include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
 

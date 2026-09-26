@@ -7,6 +7,7 @@
 #include "ForzaZip.h"
 #include "GameInstall.h"
 #include "MapLoader.h"
+#include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
 #include "WorldRenderer.h"
@@ -103,10 +104,30 @@ int main(int argc, char** argv)
     const QString cachePath
         = QStringLiteral("%1/world/%2.index")
               .arg(QStandardPaths::writableLocation(QStandardPaths::CacheLocation), track.toLower());
-    const QString signature = fh1::WorldIndex::archiveSignature(archivePath);
+    // The PVS file holds the texture tables and, with the zone files, where
+    // props are placed.
+    const QString pvsPath = install.trackPvsPath(track);
+    QByteArray pvs;
+    if (!pvsPath.isEmpty()) {
+        QFile file(pvsPath);
+        if (file.open(QIODevice::ReadOnly)) {
+            pvs = file.readAll();
+        }
+    }
+    // Same signature as the viewer's, so both share the cache.
+    const QString signature = fh1::WorldIndex::archiveSignature(archivePath) + QLatin1Char('|')
+        + fh1::WorldIndex::archiveSignature(pvsPath);
     std::optional<fh1::WorldIndex> index = fh1::WorldIndex::load(cachePath, signature);
     if (!index) {
-        index = fh1::WorldIndex::build(archive);
+        std::optional<fh1::TrackPlacements> placements;
+        if (!pvs.isEmpty()) {
+            QString placementError;
+            placements = fh1::TrackPlacements::load(pvs, archive, nullptr, &placementError);
+            if (!placements) {
+                std::fprintf(stderr, "Props are not placed: %s\n", qPrintable(placementError));
+            }
+        }
+        index = fh1::WorldIndex::build(archive, {}, nullptr, placements ? &*placements : nullptr);
         if (!index) {
             return fail(QStringLiteral("could not index %1").arg(archivePath));
         }
@@ -117,14 +138,8 @@ int main(int argc, char** argv)
     std::optional<fh1::TrackTextures> textures;
     if (!parser.isSet(untexturedOption)) {
         QString textureError = QStringLiteral("the track has no PVS file");
-        const QString pvsPath = install.trackPvsPath(track);
-        if (!pvsPath.isEmpty()) {
-            QFile pvs(pvsPath);
-            if (pvs.open(QIODevice::ReadOnly)) {
-                textures = fh1::TrackTextures::load(pvs.readAll(), archive, &textureError);
-            } else {
-                textureError = pvs.errorString();
-            }
+        if (!pvs.isEmpty()) {
+            textures = fh1::TrackTextures::load(pvs, archive, &textureError);
         }
         if (!textures) {
             std::fprintf(stderr, "No game textures: %s\n", qPrintable(textureError));

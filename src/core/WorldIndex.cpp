@@ -1,6 +1,7 @@
 #include "WorldIndex.h"
 
 #include "RenderMesh.h"
+#include "TrackTextures.h"
 
 #include <QDataStream>
 #include <QDir>
@@ -20,7 +21,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 5;
+constexpr quint32 kCacheVersion = 6;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -50,13 +51,51 @@ bool isBackdrop(const QString& partName)
     return partName.contains(QLatin1String("UberLOD"), Qt::CaseInsensitive);
 }
 
+/// The distance band a placement's ranges give level `lod`, if they give
+/// one: a level ends where the next begins, and the last where the prop
+/// stops being drawn. Meshes without levels are drawn up to the furthest.
+std::optional<std::pair<float, float>> placementBand(const Placement& placement, int lod)
+{
+    const auto& ranges = placement.ranges;
+    if (lod < 0) {
+        const float furthest = *std::max_element(ranges.begin(), ranges.end());
+        return furthest > 0.0F ? std::optional<std::pair<float, float>>({0.0F, furthest}) : std::nullopt;
+    }
+    if (lod >= static_cast<int>(ranges.size())) {
+        return std::nullopt;
+    }
+    const float start = lod == 0 ? 0.0F : ranges[static_cast<std::size_t>(lod) - 1];
+    const float end = ranges[static_cast<std::size_t>(lod)];
+    if (start < 0.0F || end <= start) {
+        return std::nullopt;
+    }
+    return std::pair<float, float>{start, end};
+}
+
 } // namespace
 
-std::optional<WorldIndex> WorldIndex::build(
-    const ForzaZip& archive, const Progress& progress, const std::atomic<bool>* cancel)
+/// A prop model found in the archive, to be placed by the draw records.
+struct WorldIndex::LocalModel {
+    std::uint32_t entry = 0;
+    RenderMeshHeader header;
+};
+
+std::optional<WorldIndex> WorldIndex::build(const ForzaZip& archive, const Progress& progress,
+    const std::atomic<bool>* cancel, const TrackPlacements* placements)
 {
     WorldIndex index;
     QHash<QString, std::uint32_t> groups;
+    const auto groupOf = [&index, &groups](const QString& partName) {
+        const QString key = rendermesh::lodGroupKey(partName);
+        auto group = groups.constFind(key);
+        if (group == groups.cend()) {
+            group = groups.insert(key, static_cast<std::uint32_t>(index.m_groupKeys.size()));
+            index.m_groupKeys.push_back(key);
+        }
+        return group.value();
+    };
+    // Props by render object number, placed once every header is read.
+    QHash<std::uint32_t, LocalModel> localModels;
     // bin.zip stores most models several times under the same name, with
     // identical contents (same CRC) at different offsets; one copy is enough.
     QSet<QString> seen;
@@ -85,29 +124,110 @@ std::optional<WorldIndex> WorldIndex::build(
         }
         const QVector3D centre = (header->boundsMin + header->boundsMax) / 2.0F;
         if (std::hypot(centre.x(), centre.z()) < kLocalSpaceRadius) {
-            ++index.m_localModels;
+            if (const std::optional<std::uint32_t> object = TrackTextures::objectNumber(entry.name)) {
+                localModels.insert(*object, LocalModel{static_cast<std::uint32_t>(i), *header});
+            } else {
+                ++index.m_localModels;
+            }
             continue;
-        }
-        const QString key = rendermesh::lodGroupKey(header->firstPartName);
-        auto group = groups.constFind(key);
-        if (group == groups.cend()) {
-            group = groups.insert(key, static_cast<std::uint32_t>(index.m_groupKeys.size()));
-            index.m_groupKeys.push_back(key);
         }
         WorldChunk chunk;
         chunk.entry = static_cast<std::uint32_t>(i);
         chunk.boundsMin = header->boundsMin;
         chunk.boundsMax = header->boundsMax;
         chunk.lod = static_cast<std::int8_t>(std::clamp(rendermesh::lodLevel(header->firstPartName), -1, 3));
-        chunk.group = group.value();
+        chunk.group = groupOf(header->firstPartName);
         chunk.backdrop = isBackdrop(header->firstPartName);
         index.m_chunks.push_back(chunk);
+    }
+    if (placements != nullptr) {
+        index.placeProps(localModels, *placements, groupOf);
+    } else {
+        index.m_localModels += static_cast<int>(localModels.size());
     }
     if (progress) {
         progress(total, total);
     }
     index.assignBands();
     return index;
+}
+
+void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, const TrackPlacements& placements,
+    const std::function<std::uint32_t(const QString&)>& groupOf)
+{
+    // Each level of detail of a prop is a draw record of its own, next to the
+    // prop's other levels and with the same transform. Some levels (mostly
+    // LOD00) are in no zone file; they take a neighbouring level's
+    // transform, so the prop does not vanish up close.
+    constexpr int kNeighbourReach = 3;
+    const auto modelOf = [&](std::size_t draw) -> const LocalModel* {
+        const auto it = models.constFind(placements.drawObject(draw));
+        return it == models.cend() ? nullptr : &it.value();
+    };
+    QSet<std::uint32_t> placedObjects;
+    const std::size_t draws = placements.drawCount();
+    for (std::size_t d = 0; d < draws; ++d) {
+        const LocalModel* model = modelOf(d);
+        if (model == nullptr) {
+            continue;
+        }
+        const Placement* placement = placements.placement(d);
+        if (placement == nullptr) {
+            const QString key = rendermesh::lodGroupKey(model->header.firstPartName);
+            for (int step = 1; step <= kNeighbourReach && placement == nullptr; ++step) {
+                for (const std::ptrdiff_t n :
+                    {static_cast<std::ptrdiff_t>(d) - step, static_cast<std::ptrdiff_t>(d) + step}) {
+                    if (n < 0 || static_cast<std::size_t>(n) >= draws) {
+                        continue;
+                    }
+                    const LocalModel* other = modelOf(static_cast<std::size_t>(n));
+                    const Placement* candidate = placements.placement(static_cast<std::size_t>(n));
+                    if (other != nullptr && candidate != nullptr
+                        && rendermesh::lodGroupKey(other->header.firstPartName) == key) {
+                        placement = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+        if (placement == nullptr) {
+            continue;
+        }
+        WorldChunk chunk;
+        chunk.entry = model->entry;
+        chunk.lod = static_cast<std::int8_t>(std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3));
+        chunk.group = groupOf(model->header.firstPartName);
+        chunk.placed = true;
+        chunk.placement = *placement;
+        const QVector3D& lo = model->header.boundsMin;
+        const QVector3D& hi = model->header.boundsMax;
+        for (int corner = 0; corner < 8; ++corner) {
+            const QVector3D p = placement->apply(QVector3D((corner & 1) != 0 ? hi.x() : lo.x(),
+                (corner & 2) != 0 ? hi.y() : lo.y(), (corner & 4) != 0 ? hi.z() : lo.z()));
+            if (corner == 0) {
+                chunk.boundsMin = p;
+                chunk.boundsMax = p;
+            } else {
+                chunk.boundsMin = QVector3D(std::min(chunk.boundsMin.x(), p.x()), std::min(chunk.boundsMin.y(), p.y()),
+                    std::min(chunk.boundsMin.z(), p.z()));
+                chunk.boundsMax = QVector3D(std::max(chunk.boundsMax.x(), p.x()), std::max(chunk.boundsMax.y(), p.y()),
+                    std::max(chunk.boundsMax.z(), p.z()));
+            }
+        }
+        m_chunks.push_back(chunk);
+        placedObjects.insert(placements.drawObject(d));
+    }
+    for (auto it = models.cbegin(); it != models.cend(); ++it) {
+        if (!placedObjects.contains(it.key())) {
+            ++m_localModels;
+        }
+    }
+}
+
+int WorldIndex::placedCount() const
+{
+    return static_cast<int>(
+        std::count_if(m_chunks.begin(), m_chunks.end(), [](const WorldChunk& c) { return c.placed; }));
 }
 
 void WorldIndex::assignBands()
@@ -124,6 +244,13 @@ void WorldIndex::assignBands()
     }
     constexpr float kInfinity = std::numeric_limits<float>::infinity();
     for (WorldChunk& chunk : m_chunks) {
+        if (chunk.placed) {
+            if (const auto band = placementBand(chunk.placement, chunk.lod)) {
+                chunk.bandStart = band->first;
+                chunk.bandEnd = band->second;
+                continue;
+            }
+        }
         if (chunk.lod < 0) {
             const float diagonal = (chunk.boundsMax - chunk.boundsMin).length();
             chunk.bandStart = 0.0F;
@@ -185,7 +312,16 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
     }
     out << static_cast<quint32>(m_chunks.size());
     for (const WorldChunk& c : m_chunks) {
-        out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group << c.backdrop;
+        out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group << c.backdrop << c.placed;
+        if (c.placed) {
+            out << c.placement.position;
+            for (const float value : c.placement.rows) {
+                out << value;
+            }
+            for (const float value : c.placement.ranges) {
+                out << value;
+            }
+        }
     }
     if (!file.commit()) {
         if (error != nullptr) {
@@ -234,8 +370,17 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
     index.m_chunks.resize(chunkCount);
     for (WorldChunk& c : index.m_chunks) {
         qint8 lod = 0;
-        in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group >> c.backdrop;
+        in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group >> c.backdrop >> c.placed;
         c.lod = lod;
+        if (c.placed) {
+            in >> c.placement.position;
+            for (float& value : c.placement.rows) {
+                in >> value;
+            }
+            for (float& value : c.placement.ranges) {
+                in >> value;
+            }
+        }
     }
     if (in.status() != QDataStream::Ok) {
         return fail(QStringLiteral("cache file is truncated"));

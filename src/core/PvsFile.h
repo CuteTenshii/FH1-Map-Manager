@@ -24,7 +24,8 @@ namespace fh1 {
 ///         15 floats (orientation and bounding box)
 ///
 /// Render object i is the file `<track>.<i>.rmb.bin`. A draw record is one
-/// placement of a render object.
+/// placement of a render object; the zone files say where (see
+/// TrackPlacements).
 struct PvsTables {
     /// Texture id of each texture record.
     std::vector<std::uint32_t> textureIds;

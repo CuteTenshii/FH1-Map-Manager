@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
+#include <unordered_map>
 
 namespace fh1 {
 
@@ -114,6 +116,9 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
         out.errors.append(error);
         out.models.push_back({chunk, 0, {}, error});
     };
+    // A prop placed many times in the tile is read and parsed once.
+    std::unordered_map<std::uint32_t, std::shared_ptr<const RenderMesh>> meshes;
+    std::unordered_map<std::uint32_t, QString> failures;
     for (std::uint32_t c : chunks) {
         const WorldChunk& chunk = index.chunks()[c];
         if (chunk.entry >= entries.size()) {
@@ -121,18 +126,36 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
             continue;
         }
         const ZipEntry& entry = entries[chunk.entry];
-        QString error;
-        const QByteArray data = archive.read(entry, &error);
-        if (data.isNull()) {
-            fail(c, error);
+        if (const auto failed = failures.find(chunk.entry); failed != failures.end()) {
+            fail(c, failed->second);
             continue;
         }
-        RenderMesh mesh;
-        try {
-            mesh = rendermesh::parse(data, entry.name);
-        } catch (const LoadError& e) {
-            fail(c, QString::fromStdString(e.what()));
-            continue;
+        std::shared_ptr<const RenderMesh>& cached = meshes[chunk.entry];
+        if (!cached) {
+            QString error;
+            const QByteArray data = archive.read(entry, &error);
+            try {
+                if (data.isNull()) {
+                    throw LoadError(error.toStdString());
+                }
+                cached = std::make_shared<const RenderMesh>(rendermesh::parse(data, entry.name));
+            } catch (const LoadError& e) {
+                meshes.erase(chunk.entry);
+                failures.emplace(chunk.entry, QString::fromStdString(e.what()));
+                fail(c, failures.at(chunk.entry));
+                continue;
+            }
+        }
+        const RenderMesh& mesh = *cached;
+        // A placement's matrix can mirror the model; its triangles then
+        // turn inside out, and the normals computed from them with it.
+        float handedness = 1.0F;
+        if (chunk.placed) {
+            const auto& r = chunk.placement.rows;
+            const float determinant = r[0] * (r[4] * r[8] - r[5] * r[7]) - r[1] * (r[3] * r[8] - r[5] * r[6])
+                + r[2] * (r[3] * r[7] - r[4] * r[6]);
+            // The parsed model already has Z negated, which mirrors once more.
+            handedness = determinant > 0.0F ? -1.0F : 1.0F;
         }
         TileMesh::Model model;
         model.chunk = c;
@@ -144,7 +167,15 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
             }
         }
         for (const RenderMesh::Part& part : mesh.parts) {
-            std::vector<QVector3D> normals(part.positions.size());
+            std::vector<QVector3D> placedPositions;
+            if (chunk.placed) {
+                placedPositions.reserve(part.positions.size());
+                for (const QVector3D& p : part.positions) {
+                    placedPositions.push_back(chunk.placement.apply(p));
+                }
+            }
+            const std::vector<QVector3D>& positions = chunk.placed ? placedPositions : part.positions;
+            std::vector<QVector3D> normals(positions.size());
             for (const RenderMesh::Material& material : part.materials) {
                 for (std::size_t t = 0; t + 2 < material.triangles.size(); t += 3) {
                     const std::uint32_t a = material.triangles[t];
@@ -153,8 +184,8 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
                     // Unnormalized, so larger triangles weigh more in the
                     // average. Flipping Z mirrored the geometry and reversed
                     // its winding, hence the swapped operands.
-                    const QVector3D n = QVector3D::crossProduct(
-                        part.positions[d] - part.positions[a], part.positions[b] - part.positions[a]);
+                    const QVector3D n = handedness
+                        * QVector3D::crossProduct(positions[d] - positions[a], positions[b] - positions[a]);
                     normals[a] += n;
                     normals[b] += n;
                     normals[d] += n;
@@ -162,7 +193,7 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
             }
             // Materials sharing a vertex can map it through different
             // texture transforms, so every material gets its own copies.
-            std::vector<std::uint32_t> remap(part.positions.size());
+            std::vector<std::uint32_t> remap(positions.size());
             for (const RenderMesh::Material& material : part.materials) {
                 const DiffuseSource source = textures != nullptr
                     ? diffuseSource(mesh, part, material, objectTextures, *textures)
@@ -177,7 +208,7 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
                 for (std::uint32_t v : material.triangles) {
                     if (remap[v] == TileMesh::kNoTexture) {
                         remap[v] = static_cast<std::uint32_t>(out.vertexCount());
-                        const QVector3D& p = part.positions[v];
+                        const QVector3D& p = positions[v];
                         QVector3D n = normals[v].normalized();
                         if (n.isNull()) {
                             n = QVector3D(0.0F, 1.0F, 0.0F);
