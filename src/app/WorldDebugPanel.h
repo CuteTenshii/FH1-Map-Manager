@@ -23,10 +23,12 @@ class QTabWidget;
 class QTableView;
 class LoadedModelTable;
 class LoadedTextureTable;
+class ModelPreview;
 class TexturePreview;
 
 /// Lists the files the 3D view has loaded: model files per tile and the
-/// textures they use, with a preview of any single texture.
+/// textures they use, with a 3D preview of any single model and a preview of
+/// any single texture.
 ///
 /// The panel only shows data it is given (setLoadedFiles()), so it works
 /// without OpenGL. Previews are decoded again from the archive on a worker
@@ -88,6 +90,7 @@ private:
     QSortFilterProxyModel* m_modelProxy = nullptr;
     QTableView* m_modelView = nullptr;
     QLabel* m_modelDetails = nullptr;
+    ModelPreview* m_modelPreview = nullptr;
     QListWidget* m_modelTextures = nullptr;
 
     LoadedTextureTable* m_textureTable = nullptr;

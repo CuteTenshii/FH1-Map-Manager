@@ -73,6 +73,9 @@ public:
     /// forgets previous tiles.
     void setGrid(const fh1::WorldTileGrid* grid);
     void setViewDistance(float metres) { m_viewDistance = metres; }
+    /// Nearest distance drawn, in metres; smaller values let the camera come
+    /// closer to small objects at the cost of depth precision far away.
+    void setNearPlane(float metres) { m_nearPlane = metres; }
     float viewDistance() const { return m_viewDistance; }
 
     /// Tiles whose loaded state differs from what `camera` needs, nearest
@@ -116,6 +119,8 @@ public:
     /// [0, kForegroundDepthFar], and the backdrop behind it; anything drawn
     /// over the world and depth-tested against it uses the same front part.
     static constexpr double kForegroundDepthFar = 0.5;
+    /// Vertical field of view of draw().
+    static constexpr float kFieldOfViewDegrees = 60.0F;
 
     /// Colour and distance scale of the fog draw() applies.
     static QVector3D fogColour();
@@ -170,6 +175,7 @@ private:
     std::vector<GpuTile> m_tiles;
     qint64 m_uploadedTriangles = 0;
     float m_viewDistance = 9000.0F;
+    float m_nearPlane = 1.0F;
 
     std::unordered_map<std::uint32_t, GpuTexture> m_textures;
     bool m_compressedTextures = false;

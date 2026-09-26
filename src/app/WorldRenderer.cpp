@@ -11,8 +11,7 @@
 
 namespace {
 
-constexpr float kNearPlane = 1.0F;
-constexpr float kFieldOfView = 60.0F;
+constexpr float kFieldOfView = WorldRenderer::kFieldOfViewDegrees;
 /// Tiles are built out to this multiple of the view distance, so turning
 /// around does not expose missing terrain, and freed beyond a further margin
 /// so a camera moving back and forth does not rebuild them constantly.
@@ -526,7 +525,7 @@ QMatrix4x4 WorldRenderer::viewProjection(const WorldCamera& camera, QSize viewpo
     QMatrix4x4 projection;
     const float aspect
         = viewport.height() > 0 ? static_cast<float>(viewport.width()) / static_cast<float>(viewport.height()) : 1.0F;
-    projection.perspective(kFieldOfView, aspect, kNearPlane, m_viewDistance * 1.2F);
+    projection.perspective(kFieldOfView, aspect, m_nearPlane, m_viewDistance * 1.2F);
     return projection * view;
 }
 

@@ -81,6 +81,11 @@ public:
         const std::atomic<bool>* cancel = nullptr, const TrackPlacements* placements = nullptr,
         const ZoneGrid* zones = nullptr);
 
+    /// An index of exactly `chunks`, kept as given (distance bands included),
+    /// without a zone grid; for showing a few chunks on their own, such as a
+    /// single model in a preview.
+    static WorldIndex fromChunks(std::vector<WorldChunk> chunks);
+
     /// Saves to, or loads from, a cache file. `signature` identifies the
     /// archive (see archiveSignature()); a cache with another signature is
     /// rejected so a changed archive is re-indexed.

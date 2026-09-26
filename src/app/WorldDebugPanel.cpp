@@ -1,5 +1,7 @@
 #include "WorldDebugPanel.h"
 
+#include "ModelPreview.h"
+
 #include <QAbstractTableModel>
 #include <QAction>
 #include <QApplication>
@@ -466,22 +468,26 @@ void WorldDebugPanel::buildModelsTab(QWidget* page)
     m_modelDetails = new QLabel;
     m_modelDetails->setWordWrap(true);
     m_modelDetails->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_modelPreview = new ModelPreview;
+    m_modelPreview->setMinimumHeight(160);
     m_modelTextures = new QListWidget;
     m_modelTextures->setToolTip(tr("Double-click or press Enter to preview a texture"));
+    m_modelTextures->setMaximumHeight(m_modelTextures->fontMetrics().height() * 4 + 8);
     connect(m_modelTextures, &QListWidget::itemActivated, this,
         [this](QListWidgetItem* item) { showTexture(item->data(kKeyRole).toUInt()); });
 
     auto* details = new QWidget;
     auto* detailsLayout = new QVBoxLayout(details);
     detailsLayout->setContentsMargins(0, 0, 0, 0);
+    detailsLayout->addWidget(m_modelPreview, 1);
     detailsLayout->addWidget(m_modelDetails);
-    detailsLayout->addWidget(m_modelTextures, 1);
+    detailsLayout->addWidget(m_modelTextures);
 
     auto* splitter = new QSplitter(Qt::Vertical);
     splitter->addWidget(m_modelView);
     splitter->addWidget(details);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 1);
+    splitter->setStretchFactor(0, 2);
+    splitter->setStretchFactor(1, 3);
 
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 4, 0, 0);
@@ -707,13 +713,18 @@ void WorldDebugPanel::onModelSelected()
     const std::optional<std::uint32_t> chunk = selectedChunk();
     const LoadedModelTable::Row* row = chunk ? m_modelTable->rowFor(*chunk) : nullptr;
     if (row == nullptr) {
-        m_modelDetails->setText(m_models.empty() ? QString() : tr("Select a model file to list its textures."));
+        m_modelDetails->setText(m_models.empty() ? QString() : tr("Select a model file to see it and its textures."));
+        m_modelPreview->clear(m_models.empty() ? QString() : tr("Select a model file to see it here."));
         return;
     }
     if (!row->model.error.isEmpty()) {
         m_modelDetails->setText(tr("%1 could not be read: %2").arg(row->file, row->model.error));
+        m_modelPreview->clear(tr("%1 could not be read.").arg(row->file));
         return;
     }
+    // Refreshes of the lists call this too; the preview keeps its camera
+    // while the same model stays selected.
+    m_modelPreview->setModel(m_archive, m_index, m_textures, row->model.chunk);
     m_modelDetails->setText(row->model.textures.empty()
             ? tr("%1 has no textures; it is drawn in a plain ground colour.").arg(row->file)
             : tr("Textures of %1:").arg(row->file));

@@ -232,6 +232,13 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
     }
 }
 
+WorldIndex WorldIndex::fromChunks(std::vector<WorldChunk> chunks)
+{
+    WorldIndex index;
+    index.m_chunks = std::move(chunks);
+    return index;
+}
+
 void WorldIndex::limitBackdropToZones(const ForzaZip& archive, const TrackPlacements& placements)
 {
     QHash<std::uint32_t, std::vector<std::size_t>> drawsOfObject;

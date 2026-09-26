@@ -1,6 +1,7 @@
 #include "EntityRenderer.h"
 #include "ForzaZip.h"
 #include "Loaders.h"
+#include "ModelPreview.h"
 #include "RenderMesh.h"
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
@@ -1519,6 +1520,9 @@ private slots:
         QCOMPARE(tabs->tabText(0), QStringLiteral("Models (1)"));
         QCOMPARE(tabs->tabText(1), QStringLiteral("Textures (2)"));
         QVERIFY(panel.showModel(0));
+        auto* modelPreview = panel.findChild<ModelPreview*>();
+        QVERIFY(modelPreview != nullptr);
+        QCOMPARE(modelPreview->model(), std::optional<std::uint32_t>(0));
 
         QSignalSpy ready(&panel, &WorldDebugPanel::previewReady);
         QVERIFY(panel.showTexture(0x2B40));
@@ -1544,7 +1548,91 @@ private slots:
 
         panel.setWorld(nullptr, nullptr, nullptr);
         QVERIFY(!panel.previewedTexture().has_value());
+        QVERIFY(!modelPreview->model().has_value());
         QCOMPARE(tabs->tabText(0), QStringLiteral("Models (0)"));
+    }
+
+    void previewsOneModel()
+    {
+        // The orbit camera looks at the centre from the fitted distance.
+        const QVector3D lo(10, 0, 10);
+        const QVector3D hi(14, 2, 18);
+        const float distance = ModelPreview::fitDistance(lo, hi, 1.0F);
+        const float radius = (hi - lo).length() / 2.0F;
+        QVERIFY(distance > radius * 2.0F && distance < radius * 2.5F);
+        // A viewport twice as tall as wide needs more distance.
+        QVERIFY(ModelPreview::fitDistance(lo, hi, 0.5F) > distance);
+        const QVector3D centre = (lo + hi) / 2.0F;
+        const WorldCamera camera = ModelPreview::orbitCamera(centre, distance, 2.0F, -0.4F);
+        QVERIFY((camera.position + camera.forward() * distance - centre).length() < 1e-3F);
+        QVERIFY(camera.position.y() > centre.y());
+
+        // A red sign, drawn textured on its own.
+        QTemporaryDir dir;
+        TestPart part = quad(QStringLiteral("Sign_LOD00"), 200, 200, 3, 2);
+        part.stride = 24;
+        part.texcoords = {{0, 0}, {65535, 0}, {0, 65535}, {65535, 65535}};
+        const TestTail tail{{{0, {0}}}, {QStringLiteral("shaders\\track\\h_diff_1.fx")}};
+        const auto [header, top] = bixTexture(8, qRgb(220, 30, 30));
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"), renderModel({part}, tail)},
+                {QStringLiteral("coloradoout.00001.rmb.bin"),
+                    renderModel({quad(QStringLiteral("Ground_NOLOD"), 900, 900, 0, 50)})},
+                {QStringLiteral("shaders/track/h_diff_1.fxobj"), shaderObject({0x3007, 0x205008})},
+                {QStringLiteral("_0x00002B40.bix"), header}, {QStringLiteral("_0x00002B40_B.bix"), top}});
+        auto archive = std::make_shared<fh1::ForzaZip>();
+        QVERIFY(archive->open(archivePath));
+        std::optional<fh1::TrackTextures> loaded = fh1::TrackTextures::load(pvsFile({0x2B40}, {{0}}), *archive);
+        QVERIFY(loaded.has_value());
+        auto textures = std::make_shared<const fh1::TrackTextures>(std::move(*loaded));
+        std::optional<fh1::WorldIndex> built = fh1::WorldIndex::build(*archive);
+        QVERIFY(built.has_value());
+        auto index = std::make_shared<const fh1::WorldIndex>(std::move(*built));
+        const auto sign = std::find_if(index->chunks().begin(), index->chunks().end(),
+            [](const fh1::WorldChunk& c) { return c.boundsMin.x() < 500.0F; });
+        QVERIFY(sign != index->chunks().end());
+        const auto signChunk = static_cast<std::uint32_t>(sign - index->chunks().begin());
+
+        ModelPreview preview;
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        preview.setFormat(format);
+        preview.resize(96, 96);
+        preview.setModel(archive, index, textures, signChunk);
+        QCOMPARE(preview.model(), std::optional<std::uint32_t>(signChunk));
+        preview.show();
+        // The offscreen platform gives OpenGL widgets no framebuffer to draw
+        // into, although it does give plain offscreen surfaces one.
+        if (QGuiApplication::platformName() == QLatin1String("offscreen")) {
+            QSKIP("OpenGL widgets cannot draw on the offscreen platform; run with a display to check drawing");
+        }
+        if (!QTest::qWaitForWindowExposed(&preview) || !preview.isValid()) {
+            QSKIP("the preview widget has no OpenGL context on this platform");
+        }
+        QSignalSpy settled(&preview, &ModelPreview::settled);
+        // Painting uploads the mesh, then its texture once decoded.
+        QVERIFY(QTest::qWaitFor(
+            [&] {
+                preview.update();
+                return preview.isSettled() && settled.count() > 0;
+            },
+            10000));
+        const QImage image = preview.grabFramebuffer();
+        if (image.isNull()) {
+            QSKIP("no OpenGL 3.3 context available to the preview");
+        }
+        const QColor centrePixel = image.pixelColor(image.width() / 2, image.height() / 2);
+        QVERIFY2(centrePixel.red() > 120 && centrePixel.green() < 60,
+            qPrintable(QStringLiteral("centre pixel %1").arg(centrePixel.name())));
+
+        // Choosing the same model again keeps the view; clearing drops it.
+        preview.setModel(archive, index, textures, signChunk);
+        QVERIFY(preview.isSettled());
+        preview.clear(QStringLiteral("nothing"));
+        QVERIFY(!preview.model().has_value());
+        QVERIFY(!preview.isSettled());
     }
 
     void rendersTexturedOffscreen()

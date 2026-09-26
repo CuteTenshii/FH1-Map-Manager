@@ -36,7 +36,7 @@ Each layer is split into groups that can be toggled separately in the Layers pan
 - **Selection:** click a marker, route or zone to select it; the Objects and Properties panels follow, and the selection stays highlighted in both views. Double-clicking an object in the Objects panel flies the camera to it.
 - **Controls:** click to select, drag to look, W A S D to move, Q and E to go down and up, Shift to go faster, and the mouse wheel to change speed.
 - **Loading:** the world streams in 500 m tiles at a level of detail chosen by distance. The first opening of a track indexes its models (a few seconds); the index is cached after that.
-- **World Debug** (View → World Debug, Ctrl+Shift+D): lists the model files in the loaded tiles (LOD, tile, triangles, textures, read errors) and the textures they use (size, format, source file, video memory, status). Select a texture to preview it at any mip level, as colour, alpha or both, and save it as a PNG. Select a model to list its textures; select a texture to list the models that use it.
+- **World Debug** (View → World Debug, Ctrl+Shift+D): lists the model files in the loaded tiles (LOD, tile, triangles, textures, read errors) and the textures they use (size, format, source file, video memory, status). Select a texture to preview it at any mip level, as colour, alpha or both, and save it as a PNG. Select a model to see it on its own, textured as in the world, and to list its textures: drag to turn it and scroll to zoom (or use the arrow keys, + and −; Home or a double-click resets the view). Select a texture to list the models that use it.
 - **Clear Cache** (File menu): deletes the cached world indexes (`world/*.index` in the user cache folder). The 3D world shown at the time is rebuilt straight away.
 - **Props:** about 48,000 placements of some 2,300 prop models on Colorado, each drawn at the level of detail and up to the distance the game's own data gives. A few hundred prop models have no placement and are not drawn. Race and festival gear (barriers, chevrons, banners, grandstands, flags), which the game only puts out for events, is hidden unless View → Show Event Props is on.
 
@@ -153,7 +153,7 @@ With these rules, all 230,057 entries of `tracks/colorado/bin.zip` and every oth
 ## Layout
 
 - `src/core`: formats and loading (LZX, zip, XML/binary parsers, string tables, Xbox and track textures, activity configs, database, calibration). No widget code.
-- `src/app`: the viewer (map view, layer items, 3D view with its world and map-layer renderers, World Debug panel, main window).
+- `src/app`: the viewer (map view, layer items, 3D view with its world and map-layer renderers, World Debug panel with its model preview, main window).
 - `tools`: `fh1zip` (archives), `fh1render` (headless 3D render), `fh1meshscan` (model statistics).
 - `tests`: unit tests, with a small LZX encoder for building test streams, plus the optional real-disc suite.
 
