@@ -1,0 +1,16 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  performance-*,
+  -performance-enum-size,
+  readability-else-after-return,
+  readability-inconsistent-declaration-parameter-name,
+  readability-redundant-*,
+  misc-unused-using-decls,
+  misc-redundant-expression,
+  modernize-use-override,
+  modernize-use-nullptr
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/(src|tests|tools)/.*'

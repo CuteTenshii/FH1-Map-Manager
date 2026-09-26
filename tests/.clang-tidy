@@ -1,0 +1,4 @@
+# QVERIFY/QCOMPARE return from the test on failure, which the optional-access
+# check cannot see, so it flags every checked access that follows them.
+InheritParentConfig: true
+Checks: '-bugprone-unchecked-optional-access'
