@@ -82,15 +82,25 @@ QStringList GameInstall::trackFolders() const
 
 QString GameInstall::trackPvsPath(const QString& track) const
 {
+    return trackRibbonFile(track, QStringLiteral("pvs"));
+}
+
+QString GameInstall::trackZoneGridPath(const QString& track) const
+{
+    return trackRibbonFile(track, QStringLiteral("hex"));
+}
+
+QString GameInstall::trackRibbonFile(const QString& track, const QString& extension) const
+{
     const QString ribbon = resolve(QStringLiteral("tracks/%1/Ribbon_00").arg(track));
     if (ribbon.isEmpty()) {
         return {};
     }
-    QString named = resolve(QStringLiteral("tracks/%1/Ribbon_00/%1_00.pvs").arg(track));
+    QString named = resolve(QStringLiteral("tracks/%1/Ribbon_00/%1_00.%2").arg(track, extension));
     if (!named.isEmpty()) {
         return named;
     }
-    const QStringList files = QDir(ribbon).entryList({QStringLiteral("*.pvs")}, QDir::Files, QDir::Name);
+    const QStringList files = QDir(ribbon).entryList({QStringLiteral("*.%1").arg(extension)}, QDir::Files, QDir::Name);
     return files.isEmpty() ? QString() : QDir(ribbon).filePath(files.first());
 }
 

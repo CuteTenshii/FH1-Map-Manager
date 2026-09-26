@@ -29,11 +29,16 @@ public:
     /// The track's PVS file, "Ribbon_00/<Track>_00.pvs" or else the first
     /// .pvs file there, or an empty string.
     QString trackPvsPath(const QString& track) const;
+    /// The track's zone grid (see ZoneGrid), "Ribbon_00/<Track>_00.hex" or
+    /// else the first .hex file there, or an empty string.
+    QString trackZoneGridPath(const QString& track) const;
 
     /// Case-insensitive lookup of one child name inside `dir`.
     static QString findChild(const QDir& dir, const QString& name);
 
 private:
+    QString trackRibbonFile(const QString& track, const QString& extension) const;
+
     QDir m_media;
     QString m_error;
 };

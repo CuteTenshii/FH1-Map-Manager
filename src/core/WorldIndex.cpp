@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 
 namespace fh1 {
@@ -21,7 +22,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 8;
+constexpr quint32 kCacheVersion = 9;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -84,7 +85,7 @@ struct WorldIndex::LocalModel {
 };
 
 std::optional<WorldIndex> WorldIndex::build(const ForzaZip& archive, const Progress& progress,
-    const std::atomic<bool>* cancel, const TrackPlacements* placements)
+    const std::atomic<bool>* cancel, const TrackPlacements* placements, const ZoneGrid* zones)
 {
     WorldIndex index;
     QHash<QString, std::uint32_t> groups;
@@ -142,6 +143,10 @@ std::optional<WorldIndex> WorldIndex::build(const ForzaZip& archive, const Progr
         chunk.group = groupOf(header->firstPartName);
         chunk.backdrop = isBackdrop(header->firstPartName);
         index.m_chunks.push_back(chunk);
+    }
+    if (placements != nullptr && zones != nullptr) {
+        index.m_zoneGrid = *zones;
+        index.limitBackdropToZones(archive, *placements);
     }
     if (placements != nullptr) {
         index.placeProps(localModels, *placements, groupOf);
@@ -227,6 +232,45 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
     }
 }
 
+void WorldIndex::limitBackdropToZones(const ForzaZip& archive, const TrackPlacements& placements)
+{
+    QHash<std::uint32_t, std::vector<std::size_t>> drawsOfObject;
+    for (std::size_t d = 0; d < placements.drawCount(); ++d) {
+        drawsOfObject[placements.drawObject(d)].push_back(d);
+    }
+    // Only the finest level of the backdrop is in any zone's list; the
+    // coarser ones are never drawn, and the finest serves every distance.
+    std::vector<bool> unlisted(m_chunks.size(), false);
+    for (std::size_t i = 0; i < m_chunks.size(); ++i) {
+        WorldChunk& chunk = m_chunks[i];
+        if (!chunk.backdrop) {
+            continue;
+        }
+        const std::optional<std::uint32_t> object = TrackTextures::objectNumber(archive.entries()[chunk.entry].name);
+        if (!object) {
+            continue;
+        }
+        for (const std::size_t draw : drawsOfObject.value(*object)) {
+            const std::vector<std::uint16_t>& listing = placements.zonesListing(draw);
+            chunk.zones.insert(chunk.zones.end(), listing.begin(), listing.end());
+        }
+        std::sort(chunk.zones.begin(), chunk.zones.end());
+        chunk.zones.erase(std::unique(chunk.zones.begin(), chunk.zones.end()), chunk.zones.end());
+        unlisted[i] = chunk.zones.empty();
+    }
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < m_chunks.size(); ++i) {
+        if (unlisted[i]) {
+            continue;
+        }
+        if (kept != i) {
+            m_chunks[kept] = std::move(m_chunks[i]);
+        }
+        ++kept;
+    }
+    m_chunks.resize(kept);
+}
+
 int WorldIndex::placedCount() const
 {
     return static_cast<int>(
@@ -309,6 +353,10 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
     QDataStream out(&file);
     out.setVersion(QDataStream::Qt_6_5);
     out << kCacheMagic << kCacheVersion << signature << static_cast<qint32>(m_localModels);
+    out << m_zoneGrid.has_value();
+    if (m_zoneGrid) {
+        out << *m_zoneGrid;
+    }
     out << static_cast<quint32>(m_groupKeys.size());
     for (const QString& key : m_groupKeys) {
         out << key;
@@ -316,6 +364,10 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
     out << static_cast<quint32>(m_chunks.size());
     for (const WorldChunk& c : m_chunks) {
         out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group << c.backdrop << c.placed;
+        out << static_cast<quint32>(c.zones.size());
+        for (const std::uint16_t zone : c.zones) {
+            out << zone;
+        }
         if (c.placed) {
             out << c.placement.position << c.placement.eventProp;
             for (const float value : c.placement.rows) {
@@ -362,6 +414,13 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
     }
     WorldIndex index;
     index.m_localModels = localModels;
+    bool hasZoneGrid = false;
+    in >> hasZoneGrid;
+    if (hasZoneGrid) {
+        ZoneGrid grid;
+        in >> grid;
+        index.m_zoneGrid = std::move(grid);
+    }
     quint32 groupCount = 0;
     in >> groupCount;
     index.m_groupKeys.resize(groupCount);
@@ -375,6 +434,15 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
         qint8 lod = 0;
         in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group >> c.backdrop >> c.placed;
         c.lod = lod;
+        quint32 zoneCount = 0;
+        in >> zoneCount;
+        if (in.status() != QDataStream::Ok || zoneCount > std::numeric_limits<std::uint16_t>::max() + 1U) {
+            return fail(QStringLiteral("cache file is corrupt"));
+        }
+        c.zones.resize(zoneCount);
+        for (std::uint16_t& zone : c.zones) {
+            in >> zone;
+        }
         if (c.placed) {
             in >> c.placement.position >> c.placement.eventProp;
             for (float& value : c.placement.rows) {

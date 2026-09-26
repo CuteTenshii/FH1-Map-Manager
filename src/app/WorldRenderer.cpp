@@ -569,10 +569,15 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     // The backdrop terrain lies within a few metres of the detailed ground
     // where both exist, often above it. Drawing it into the back half of the
     // depth range makes any other geometry win wherever they overlap, while
-    // the backdrop still shows, in place, where it is alone.
+    // the backdrop still shows, in place, where it is alone. Near the
+    // camera it can lie well above the ground and hang over the view like
+    // a ceiling; the zone the camera is in says which backdrop pieces the
+    // game draws from there.
+    const fh1::ZoneGrid* zones = m_grid->index().zoneGrid();
+    const int zone = zones != nullptr ? zones->zoneAt(camera.position.x(), camera.position.z()) : -1;
     for (const bool backdrop : {false, true}) {
         glDepthRange(backdrop ? kForegroundDepthFar : 0.0, backdrop ? 1.0 : kForegroundDepthFar);
-        drawBatches(visible, backdrop, texturedLocation, stats);
+        drawBatches(visible, backdrop, zone, texturedLocation, stats);
     }
     glDepthRange(0.0, 1.0);
     glBindVertexArray(0);
@@ -585,13 +590,17 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
 }
 
 void WorldRenderer::drawBatches(
-    const std::vector<std::size_t>& visible, bool backdrop, int texturedLocation, Stats& stats)
+    const std::vector<std::size_t>& visible, bool backdrop, int zone, int texturedLocation, Stats& stats)
 {
+    const auto& chunks = m_grid->index().chunks();
     for (const std::size_t i : visible) {
         const GpuTile& gpu = m_tiles[i];
         glBindVertexArray(gpu.vao);
         for (const fh1::TileMesh::Batch& batch : gpu.batches) {
             if (batch.backdrop != backdrop) {
+                continue;
+            }
+            if (batch.chunk < chunks.size() && !chunks[batch.chunk].visibleFrom(zone)) {
                 continue;
             }
             GLuint name = 0;

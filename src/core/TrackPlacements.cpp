@@ -3,9 +3,11 @@
 #include "BigEndianCursor.h"
 #include "PvsFile.h"
 
+#include <QRegularExpression>
 #include <QSet>
 #include <QtConcurrent/QtConcurrentMap>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -142,9 +144,14 @@ std::optional<TrackPlacements> TrackPlacements::load(
     result.m_drawObjects = std::move(tables->drawObjects);
     result.m_placements.resize(result.m_drawObjects.size());
 
+    result.m_zonesListing.resize(result.m_drawObjects.size());
+
     // Zone files are stored several times, some under names differing only
     // in case; one copy of each is enough.
+    static const QRegularExpression zoneNumber(
+        QStringLiteral("z(\\d+)\\.pvsz$"), QRegularExpression::CaseInsensitiveOption);
     std::vector<std::size_t> zones;
+    std::vector<int> zoneNumbers;
     QSet<QString> names;
     const auto& entries = archive.entries();
     for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -155,6 +162,10 @@ std::optional<TrackPlacements> TrackPlacements::load(
         if (!names.contains(name)) {
             names.insert(name);
             zones.push_back(i);
+            const QRegularExpressionMatch match = zoneNumber.match(name);
+            bool ok = false;
+            const int number = match.hasMatch() ? match.captured(1).toInt(&ok) : -1;
+            zoneNumbers.push_back(ok && number <= std::numeric_limits<std::uint16_t>::max() ? number : -1);
         }
     }
     using ZonePlacements = std::optional<std::vector<std::pair<std::uint32_t, Placement>>>;
@@ -170,18 +181,35 @@ std::optional<TrackPlacements> TrackPlacements::load(
         return std::nullopt;
     }
     result.m_zones = static_cast<int>(zones.size());
-    for (const ZonePlacements& zone : parsed) {
+    for (std::size_t z = 0; z < parsed.size(); ++z) {
+        const ZonePlacements& zone = parsed[z];
         if (!zone) {
             ++result.m_failedZones;
             continue;
         }
         for (const auto& [draw, placement] : *zone) {
-            if (draw < result.m_placements.size() && !result.m_placements[draw]) {
+            if (draw >= result.m_placements.size()) {
+                continue;
+            }
+            if (!result.m_placements[draw]) {
                 result.m_placements[draw] = placement;
+            }
+            if (zoneNumbers[z] >= 0) {
+                result.m_zonesListing[draw].push_back(static_cast<std::uint16_t>(zoneNumbers[z]));
             }
         }
     }
+    for (std::vector<std::uint16_t>& listing : result.m_zonesListing) {
+        std::sort(listing.begin(), listing.end());
+        listing.erase(std::unique(listing.begin(), listing.end()), listing.end());
+    }
     return result;
+}
+
+const std::vector<std::uint16_t>& TrackPlacements::zonesListing(std::size_t draw) const
+{
+    static const std::vector<std::uint16_t> kNone;
+    return draw < m_zonesListing.size() ? m_zonesListing[draw] : kNone;
 }
 
 const Placement* TrackPlacements::placement(std::size_t draw) const

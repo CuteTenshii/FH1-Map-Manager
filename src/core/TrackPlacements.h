@@ -53,11 +53,13 @@ struct Placement {
 ///         and 32 bytes; a is 0xFFFFFFFF for event props (see
 ///         Placement::eventProp), the rest is not needed here
 ///
-/// Zones overlap, so a draw appears in several; its transform is the same in
-/// each. Each level of detail of a prop is a draw record of its own, with
-/// the same transform as its other levels. The layout reads every zone of
-/// Colorado to its end and was matched against CollObjs.xml and against the
-/// world-space models; it is inferred from the data, not from game code.
+/// A zone file lists the draws the game draws while the camera is in that
+/// zone (ZoneGrid says where each zone is), so zones overlap and a draw
+/// appears in several; its transform is the same in each. Each level of
+/// detail of a prop is a draw record of its own, with the same transform as
+/// its other levels. The layout reads every zone of Colorado to its end and
+/// was matched against CollObjs.xml and against the world-space models; it is
+/// inferred from the data, not from game code.
 class TrackPlacements {
 public:
     /// Reads the draw table of `pvs` and every zone file in `archive`.
@@ -76,12 +78,16 @@ public:
     std::uint16_t drawObject(std::size_t draw) const { return m_drawObjects[draw]; }
     /// Where draw record `draw` is placed, or nullptr if no zone says.
     const Placement* placement(std::size_t draw) const;
+    /// The zones whose files list draw record `draw`, in increasing order;
+    /// zone n is `__R00Z<n>.pvsz`.
+    const std::vector<std::uint16_t>& zonesListing(std::size_t draw) const;
     int zoneCount() const { return m_zones; }
     int failedZones() const { return m_failedZones; }
 
 private:
     std::vector<std::uint16_t> m_drawObjects;
     std::vector<std::optional<Placement>> m_placements;
+    std::vector<std::vector<std::uint16_t>> m_zonesListing;
     int m_zones = 0;
     int m_failedZones = 0;
 };

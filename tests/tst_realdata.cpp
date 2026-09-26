@@ -8,6 +8,7 @@
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
+#include "ZoneGrid.h"
 
 #include <QTest>
 
@@ -221,9 +222,43 @@ private slots:
         const QVector3D xAxis = pole->apply(QVector3D(1, 0, 0)) - pole->position;
         QVERIFY((xAxis - QVector3D(0.163759F, 0, 0.9865F)).length() < 0.01F);
 
-        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        // The zone at the festival (X -752, Z -260) lists the festival's
+        // ground (render object 10020) but not the backdrop terrain over it
+        // (render object 12910), which there lies 14 m above the ground.
+        QString zoneError;
+        const std::optional<fh1::ZoneGrid> zones
+            = fh1::ZoneGrid::readFile(install.trackZoneGridPath(QStringLiteral("colorado")), &zoneError);
+        QVERIFY2(zones.has_value(), qPrintable(zoneError));
+        QCOMPARE(zones->zoneCount(), 1434);
+        const int festival = zones->zoneAt(-752.0F, -260.0F);
+        QVERIFY(festival >= 0);
+        const auto listedAtFestival = [&](std::uint16_t object) {
+            for (std::size_t d = 0; d < placements->drawCount(); ++d) {
+                const std::vector<std::uint16_t>& listing = placements->zonesListing(d);
+                if (placements->drawObject(d) == object
+                    && std::binary_search(listing.begin(), listing.end(), festival)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        QVERIFY(listedAtFestival(10020));
+        QVERIFY(!listedAtFestival(12910));
+
+        const std::optional<fh1::WorldIndex> index
+            = fh1::WorldIndex::build(archive, {}, nullptr, &*placements, &*zones);
         QVERIFY(index.has_value());
         QVERIFY2(index->placedCount() > 45000, qPrintable(QString::number(index->placedCount())));
+        int backdrop = 0;
+        for (const fh1::WorldChunk& chunk : index->chunks()) {
+            if (chunk.backdrop) {
+                ++backdrop;
+                QVERIFY(!chunk.zones.empty());
+            }
+        }
+        // The 23 finest backdrop pieces; their 44 coarser levels are in no
+        // zone's list.
+        QCOMPARE(backdrop, 23);
         // Only a few hundred prop models are never placed.
         QVERIFY2(index->localModelCount() < 1000, qPrintable(QString::number(index->localModelCount())));
     }

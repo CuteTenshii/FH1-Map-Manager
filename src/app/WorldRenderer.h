@@ -157,8 +157,10 @@ private:
 
     void releaseTile(GpuTile& tile);
     /// Draws the batches of the `visible` tiles that are (or are not)
-    /// backdrop terrain, with the world program bound.
-    void drawBatches(const std::vector<std::size_t>& visible, bool backdrop, int texturedLocation, Stats& stats);
+    /// backdrop terrain, with the world program bound. Backdrop chunks not
+    /// drawn from `zone` (see fh1::WorldChunk::visibleFrom) are left out.
+    void drawBatches(
+        const std::vector<std::size_t>& visible, bool backdrop, int zone, int texturedLocation, Stats& stats);
     void addTextureUser(std::uint32_t id);
     void removeTextureUser(std::uint32_t id);
     void deleteTexture(GpuTexture& texture);

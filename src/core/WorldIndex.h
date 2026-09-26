@@ -2,12 +2,14 @@
 
 #include "ForzaZip.h"
 #include "TrackPlacements.h"
+#include "ZoneGrid.h"
 
 #include <QHash>
 #include <QRectF>
 #include <QString>
 #include <QVector3D>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -36,10 +38,23 @@ struct WorldChunk {
     /// Part of the map-wide far terrain, which only shows where no other
     /// geometry covers the same ground (see WorldRenderer).
     bool backdrop = false;
+    /// For backdrop chunks of an index built with visibility data: the zones
+    /// (see ZoneGrid) whose files list the chunk, in increasing order. The
+    /// game draws the chunk only while the camera is in one of them, which
+    /// keeps the backdrop away from where the detailed ground lies below it.
+    /// Empty when drawn from everywhere.
+    std::vector<std::uint16_t> zones;
     /// A prop drawn where `placement` puts it; world-space models are drawn
     /// as stored.
     bool placed = false;
     Placement placement;
+
+    /// Whether the chunk is drawn while the camera is in `zone`; -1 (outside
+    /// every zone, or no zone data) draws it.
+    bool visibleFrom(int zone) const
+    {
+        return zones.empty() || zone < 0 || std::binary_search(zones.begin(), zones.end(), zone);
+    }
 };
 
 /// The render models of a track, found by reading only the header of every
@@ -47,7 +62,9 @@ struct WorldChunk {
 /// Models centred on the origin are props in their own local space: each of
 /// their placements (see TrackPlacements) becomes a chunk of its own, and
 /// those never placed are only counted. Boundary shells and shadow-casting
-/// stand-ins are left out.
+/// stand-ins are left out. With the track's zone grid, backdrop chunks carry
+/// the zones they are drawn from, and backdrop levels no zone lists (which
+/// the game never draws) are left out.
 class WorldIndex {
 public:
     using Progress = std::function<void(int done, int total)>;
@@ -57,10 +74,12 @@ public:
     static constexpr float kLodStart[] = {0.0F, 400.0F, 1500.0F, 4000.0F};
 
     /// Reads every render model header of `archive`, and places props where
-    /// `placements` says (without it, props are left out). Returns nothing if
-    /// `cancel` was set while it ran.
+    /// `placements` says (without it, props are left out). With `placements`
+    /// and `zones`, limits the backdrop to the zones that list it. Returns
+    /// nothing if `cancel` was set while it ran.
     static std::optional<WorldIndex> build(const ForzaZip& archive, const Progress& progress = {},
-        const std::atomic<bool>* cancel = nullptr, const TrackPlacements* placements = nullptr);
+        const std::atomic<bool>* cancel = nullptr, const TrackPlacements* placements = nullptr,
+        const ZoneGrid* zones = nullptr);
 
     /// Saves to, or loads from, a cache file. `signature` identifies the
     /// archive (see archiveSignature()); a cache with another signature is
@@ -74,6 +93,8 @@ public:
     int localModelCount() const { return m_localModels; }
     /// Chunks that are placements of props.
     int placedCount() const;
+    /// The zone grid the index was built with, or nullptr.
+    const ZoneGrid* zoneGrid() const { return m_zoneGrid ? &*m_zoneGrid : nullptr; }
     /// Bounds of all chunks in the XZ plane (x = world X, y = world Z).
     QRectF footprint() const;
 
@@ -87,10 +108,12 @@ private:
     struct LocalModel;
     void placeProps(const QHash<std::uint32_t, LocalModel>& models, const TrackPlacements& placements,
         const std::function<std::uint32_t(const QString&)>& groupOf);
+    void limitBackdropToZones(const ForzaZip& archive, const TrackPlacements& placements);
 
     std::vector<WorldChunk> m_chunks;
     std::vector<QString> m_groupKeys;
     int m_localModels = 0;
+    std::optional<ZoneGrid> m_zoneGrid;
 };
 
 } // namespace fh1

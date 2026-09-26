@@ -54,6 +54,8 @@ add_library(fh1core STATIC
     src/core/WorldTiles.h
     src/core/XboxTexture.cpp
     src/core/XboxTexture.h
+    src/core/ZoneGrid.cpp
+    src/core/ZoneGrid.h
 )
 target_include_directories(fh1core PUBLIC src/core)
 target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Concurrent ZLIB::ZLIB)

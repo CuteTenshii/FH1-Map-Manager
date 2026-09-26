@@ -1187,71 +1187,80 @@ void MainWindow::ensureWorld()
     m_clearCacheAction->setEnabled(false);
     const QString cachePath = QStringLiteral("%1/%2.index").arg(worldCacheDirectory(), m_trackName.toLower());
     const QString pvsPath = m_install.trackPvsPath(m_trackName);
+    const QString zoneGridPath = m_install.trackZoneGridPath(m_trackName);
     const QPointer<MainWindow> guard(this);
     auto cancel = m_worldCancel;
     statusBar()->showMessage(tr("Opening the 3D world…"));
     m_busy->setVisible(true);
-    m_worldWatcher.setFuture(QtConcurrent::run([archivePath, cachePath, pvsPath, cancel, guard]() -> WorldLoad {
-        auto archive = std::make_shared<fh1::ForzaZip>();
-        if (!archive->open(archivePath)) {
-            return {nullptr, nullptr, nullptr, archive->errorString(), {}};
-        }
-        // The PVS file holds the texture tables and, with the zone files,
-        // where props are placed.
-        QByteArray pvs;
-        QString pvsError = QStringLiteral("the track has no PVS file");
-        if (!pvsPath.isEmpty()) {
-            QFile file(pvsPath);
-            if (file.open(QIODevice::ReadOnly)) {
-                pvs = file.readAll();
-            } else {
-                pvsError = file.errorString();
+    m_worldWatcher.setFuture(
+        QtConcurrent::run([archivePath, cachePath, pvsPath, zoneGridPath, cancel, guard]() -> WorldLoad {
+            auto archive = std::make_shared<fh1::ForzaZip>();
+            if (!archive->open(archivePath)) {
+                return {nullptr, nullptr, nullptr, archive->errorString(), {}};
             }
-        }
-        const QString signature = fh1::WorldIndex::archiveSignature(archivePath) + QLatin1Char('|')
-            + fh1::WorldIndex::archiveSignature(pvsPath);
-        std::optional<fh1::WorldIndex> index = fh1::WorldIndex::load(cachePath, signature);
-        if (!index) {
-            std::optional<fh1::TrackPlacements> placements;
-            if (!pvs.isEmpty()) {
-                QString placementError;
-                placements = fh1::TrackPlacements::load(pvs, *archive, cancel.get(), &placementError);
-                if (!placements && !cancel->load()) {
-                    std::fprintf(stderr, "Props are not placed: %s\n", qPrintable(placementError));
+            // The PVS file holds the texture tables and, with the zone files,
+            // where props are placed.
+            QByteArray pvs;
+            QString pvsError = QStringLiteral("the track has no PVS file");
+            if (!pvsPath.isEmpty()) {
+                QFile file(pvsPath);
+                if (file.open(QIODevice::ReadOnly)) {
+                    pvs = file.readAll();
+                } else {
+                    pvsError = file.errorString();
                 }
             }
-            index = fh1::WorldIndex::build(
-                *archive,
-                [guard](int done, int total) {
-                    QMetaObject::invokeMethod(
-                        qApp,
-                        [guard, done, total] {
-                            if (guard) {
-                                guard->statusBar()->showMessage(
-                                    guard->tr("Indexing the 3D world (first time only): %1%")
-                                        .arg(done * 100 / std::max(total, 1)));
-                            }
-                        },
-                        Qt::QueuedConnection);
-                },
-                cancel.get(), placements ? &*placements : nullptr);
+            const QString signature = fh1::WorldIndex::archiveSignature(archivePath) + QLatin1Char('|')
+                + fh1::WorldIndex::archiveSignature(pvsPath) + QLatin1Char('|')
+                + fh1::WorldIndex::archiveSignature(zoneGridPath);
+            std::optional<fh1::WorldIndex> index = fh1::WorldIndex::load(cachePath, signature);
             if (!index) {
-                return {nullptr, nullptr, nullptr, QStringLiteral("cancelled"), {}};
+                std::optional<fh1::TrackPlacements> placements;
+                if (!pvs.isEmpty()) {
+                    QString placementError;
+                    placements = fh1::TrackPlacements::load(pvs, *archive, cancel.get(), &placementError);
+                    if (!placements && !cancel->load()) {
+                        std::fprintf(stderr, "Props are not placed: %s\n", qPrintable(placementError));
+                    }
+                }
+                QString zoneError = QStringLiteral("the track has no zone grid file");
+                const std::optional<fh1::ZoneGrid> zones
+                    = zoneGridPath.isEmpty() ? std::nullopt : fh1::ZoneGrid::readFile(zoneGridPath, &zoneError);
+                if (!zones) {
+                    std::fprintf(stderr, "The backdrop terrain is drawn from everywhere: %s\n", qPrintable(zoneError));
+                }
+                index = fh1::WorldIndex::build(
+                    *archive,
+                    [guard](int done, int total) {
+                        QMetaObject::invokeMethod(
+                            qApp,
+                            [guard, done, total] {
+                                if (guard) {
+                                    guard->statusBar()->showMessage(
+                                        guard->tr("Indexing the 3D world (first time only): %1%")
+                                            .arg(done * 100 / std::max(total, 1)));
+                                }
+                            },
+                            Qt::QueuedConnection);
+                    },
+                    cancel.get(), placements ? &*placements : nullptr, zones ? &*zones : nullptr);
+                if (!index) {
+                    return {nullptr, nullptr, nullptr, QStringLiteral("cancelled"), {}};
+                }
+                QString error;
+                if (!index->save(cachePath, signature, &error)) {
+                    std::fprintf(stderr, "Could not cache the world index: %s\n", qPrintable(error));
+                }
             }
-            QString error;
-            if (!index->save(cachePath, signature, &error)) {
-                std::fprintf(stderr, "Could not cache the world index: %s\n", qPrintable(error));
+            std::shared_ptr<const fh1::TrackTextures> textures;
+            QString textureError = pvsError;
+            if (!pvs.isEmpty()) {
+                if (std::optional<fh1::TrackTextures> loaded = fh1::TrackTextures::load(pvs, *archive, &textureError)) {
+                    textures = std::make_shared<const fh1::TrackTextures>(std::move(*loaded));
+                }
             }
-        }
-        std::shared_ptr<const fh1::TrackTextures> textures;
-        QString textureError = pvsError;
-        if (!pvs.isEmpty()) {
-            if (std::optional<fh1::TrackTextures> loaded = fh1::TrackTextures::load(pvs, *archive, &textureError)) {
-                textures = std::make_shared<const fh1::TrackTextures>(std::move(*loaded));
-            }
-        }
-        return {archive, std::make_shared<const fh1::WorldIndex>(std::move(*index)), textures, {}, textureError};
-    }));
+            return {archive, std::make_shared<const fh1::WorldIndex>(std::move(*index)), textures, {}, textureError};
+        }));
 }
 
 void MainWindow::onWorldLoaded()

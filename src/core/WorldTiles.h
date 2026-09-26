@@ -39,6 +39,7 @@ public:
     int stateAt(const Tile& tile, float distance) const;
     /// Chunks drawn when the tile is `distance` metres away.
     std::vector<std::uint32_t> chunksAt(const Tile& tile, float distance) const;
+    const WorldIndex& index() const { return m_index; }
 
 private:
     const WorldIndex& m_index;
@@ -48,11 +49,14 @@ private:
 /// Geometry of one tile state, ready for upload: interleaved position
 /// (x, y, z), normal (x, y, z) and texture coordinate (u, v) floats, and
 /// triangle-list indices grouped into one batch per diffuse texture, with
-/// backdrop terrain in batches of its own.
+/// backdrop terrain in batches of its own, one per chunk, so each can be
+/// shown or hidden by the camera's zone (WorldChunk::zones).
 struct TileMesh {
     static constexpr int kFloatsPerVertex = 8;
     /// Batch texture of geometry without a known diffuse texture.
     static constexpr std::uint32_t kNoTexture = 0xFFFFFFFF;
+    /// Batch chunk of geometry merged from several chunks.
+    static constexpr std::uint32_t kMergedChunks = 0xFFFFFFFF;
 
     struct Batch {
         std::uint32_t texture = kNoTexture;
@@ -60,6 +64,9 @@ struct TileMesh {
         std::uint32_t indexCount = 0;
         /// Geometry of backdrop chunks (WorldChunk::backdrop).
         bool backdrop = false;
+        /// For backdrop batches, the chunk (index into WorldIndex::chunks())
+        /// the geometry comes from; kMergedChunks otherwise.
+        std::uint32_t chunk = kMergedChunks;
     };
 
     /// One model file that went into the mesh, or failed to.

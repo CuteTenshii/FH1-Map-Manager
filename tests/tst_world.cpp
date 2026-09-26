@@ -9,7 +9,9 @@
 #include "WorldRenderer.h"
 #include "WorldTiles.h"
 #include "XboxTexture.h"
+#include "ZoneGrid.h"
 
+#include <QDataStream>
 #include <QFile>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
@@ -25,7 +27,9 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <optional>
+#include <utility>
 #include <zlib.h>
 
 namespace {
@@ -357,6 +361,25 @@ QByteArray zoneFile(const QList<TestPlacement>& placements)
         d.append("xy", 2);
         d.append(QByteArray(32, '\x77'));
     }
+    return d;
+}
+
+/// A zone grid file in the layout ZoneGrid documents, with the origin at
+/// 0, 0 and cells of radius 100.
+QByteArray hexFile(quint32 zones, quint32 columns, quint32 rows, const QList<quint32>& cells)
+{
+    QByteArray d("HEXY");
+    be32(d, 101);
+    beFloat(d, 100.0F);
+    beFloat(d, 0.0F);
+    beFloat(d, 0.0F);
+    be32(d, zones);
+    be32(d, columns);
+    be32(d, rows);
+    for (quint32 cell : cells) {
+        be32(d, cell);
+    }
+    d.append(QByteArray(static_cast<qsizetype>(zones) * 9, '\x01'));
     return d;
 }
 
@@ -825,6 +848,159 @@ private slots:
         QVERIFY(unplaced.has_value());
         QCOMPARE(unplaced->placedCount(), 0);
         QCOMPARE(unplaced->localModelCount(), 3);
+    }
+
+    void readsZoneGrid()
+    {
+        // Three columns and two rows; the middle cell of the second row has
+        // no zone. Odd columns sit half a row further along Z.
+        constexpr quint32 kNone = 0xFFFFFFFF;
+        const std::optional<fh1::ZoneGrid> grid = fh1::ZoneGrid::read(hexFile(5, 3, 2, {0, 1, 2, 3, kNone, 4}));
+        QVERIFY(grid.has_value());
+        QCOMPARE(grid->zoneCount(), 5);
+        const float rowPitch = std::sqrt(3.0F) * 100.0F;
+        QCOMPARE(grid->zoneAt(100.0F, rowPitch / 2), 0);
+        QCOMPARE(grid->zoneAt(250.0F, rowPitch), 1);
+        QCOMPARE(grid->zoneAt(400.0F, rowPitch / 2), 2);
+        QCOMPARE(grid->zoneAt(100.0F, rowPitch * 1.5F), 3);
+        QCOMPARE(grid->zoneAt(250.0F, rowPitch * 2), -1);
+        QCOMPARE(grid->zoneAt(400.0F, rowPitch * 1.5F), 4);
+        // Near the edge between cells 0 and 1, on cell 0's side.
+        QCOMPARE(grid->zoneAt(170.0F, 120.0F), 0);
+        // Below the odd column's first cell is outside the grid.
+        QCOMPARE(grid->zoneAt(250.0F, 60.0F), -1);
+        QCOMPARE(grid->zoneAt(-500.0F, 0.0F), -1);
+
+        QByteArray stored;
+        {
+            QDataStream out(&stored, QIODevice::WriteOnly);
+            out << *grid;
+        }
+        QDataStream in(stored);
+        fh1::ZoneGrid reloaded;
+        in >> reloaded;
+        QCOMPARE(in.status(), QDataStream::Ok);
+        QCOMPARE(reloaded.zoneAt(400.0F, rowPitch * 1.5F), 4);
+        QCOMPARE(reloaded.zoneAt(250.0F, rowPitch * 2), -1);
+
+        QString error;
+        QByteArray wrongMagic = hexFile(1, 1, 1, {0});
+        wrongMagic[0] = 'X';
+        QVERIFY(!fh1::ZoneGrid::read(wrongMagic, &error).has_value());
+        QVERIFY(!fh1::ZoneGrid::read(hexFile(1, 1, 1, {3}), &error).has_value());
+        QVERIFY(error.contains(QLatin1String("zone 3")));
+        QVERIFY(!fh1::ZoneGrid::read(hexFile(1, 2, 2, {0}).left(40), &error).has_value());
+    }
+
+    void limitsBackdropToZones()
+    {
+        // Ground in zone 0's cell, and backdrop terrain at two levels over
+        // both cells. Zone 0 lists only the ground, zone 1 the ground and
+        // the backdrop's finest level; nothing lists its coarser level.
+        const float rowPitch = std::sqrt(3.0F) * 100.0F;
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const TestPlacement ground{0, QVector3D(), {1, 0, 0, 0, 1, 0, 0, 0, -1}};
+        const TestPlacement backdropNear{1, QVector3D(), ground.rows};
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"),
+                 renderModel({quad(QStringLiteral("Terrain_LOD00"), 100, rowPitch / 2, 0, 60)})},
+                {QStringLiteral("coloradoout.00001.rmb.bin"),
+                    renderModel({quad(QStringLiteral("TERR_UberLOD_Patch01_LOD00"), 175, rowPitch / 2, 5, 150)})},
+                {QStringLiteral("coloradoout.00002.rmb.bin"),
+                    renderModel({quad(QStringLiteral("TERR_UberLOD_Patch01_LOD01"), 175, rowPitch / 2, 5, 150)})},
+                {QStringLiteral("__R00Z00000.pvsz"), zoneFile({ground})},
+                {QStringLiteral("__R00Z00001.pvsz"), zoneFile({ground, backdropNear})}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}}, {0, 1, 2}), archive);
+        QVERIFY(placements.has_value());
+        QCOMPARE(placements->zonesListing(0), (std::vector<std::uint16_t>{0, 1}));
+        QCOMPARE(placements->zonesListing(1), (std::vector<std::uint16_t>{1}));
+        QVERIFY(placements->zonesListing(2).empty());
+        QVERIFY(placements->zonesListing(99).empty());
+        const std::optional<fh1::ZoneGrid> zones = fh1::ZoneGrid::read(hexFile(2, 2, 1, {0, 1}));
+        QVERIFY(zones.has_value());
+
+        const std::optional<fh1::WorldIndex> index
+            = fh1::WorldIndex::build(archive, {}, nullptr, &*placements, &*zones);
+        QVERIFY(index.has_value());
+        QVERIFY(index->zoneGrid() != nullptr);
+        // The coarser backdrop level is left out, so the finest one serves
+        // every distance.
+        QCOMPARE(index->chunks().size(), std::size_t{2});
+        const auto backdrop = std::find_if(
+            index->chunks().begin(), index->chunks().end(), [](const fh1::WorldChunk& c) { return c.backdrop; });
+        QVERIFY(backdrop != index->chunks().end());
+        const auto backdropIndex = static_cast<std::uint32_t>(backdrop - index->chunks().begin());
+        QCOMPARE(backdrop->lod, std::int8_t{0});
+        QCOMPARE(backdrop->bandEnd, std::numeric_limits<float>::infinity());
+        QCOMPARE(backdrop->zones, (std::vector<std::uint16_t>{1}));
+        QVERIFY(!backdrop->visibleFrom(0));
+        QVERIFY(backdrop->visibleFrom(1));
+        QVERIFY(backdrop->visibleFrom(-1));
+        const auto groundChunk = std::find_if(
+            index->chunks().begin(), index->chunks().end(), [](const fh1::WorldChunk& c) { return !c.backdrop; });
+        QVERIFY(groundChunk->zones.empty());
+        QVERIFY(groundChunk->visibleFrom(0));
+
+        const QString cache = dir.filePath(QStringLiteral("world.index"));
+        QVERIFY(index->save(cache, QStringLiteral("sig")));
+        const std::optional<fh1::WorldIndex> reloaded = fh1::WorldIndex::load(cache, QStringLiteral("sig"));
+        QVERIFY(reloaded.has_value());
+        QVERIFY(reloaded->zoneGrid() != nullptr);
+        QCOMPARE(reloaded->zoneGrid()->zoneAt(250.0F, rowPitch), 1);
+        QCOMPARE(reloaded->chunks()[backdropIndex].zones, backdrop->zones);
+
+        // Backdrop geometry gets a batch of its own, naming its chunk.
+        const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, {0, 1});
+        QCOMPARE(mesh.batches.size(), std::size_t{2});
+        for (const fh1::TileMesh::Batch& batch : mesh.batches) {
+            QCOMPARE(batch.chunk, batch.backdrop ? backdropIndex : fh1::TileMesh::kMergedChunks);
+        }
+
+        // Without a zone grid, every backdrop level is kept and drawn from
+        // everywhere.
+        const std::optional<fh1::WorldIndex> everywhere = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(everywhere.has_value());
+        QCOMPARE(everywhere->chunks().size(), std::size_t{3});
+        QVERIFY(everywhere->zoneGrid() == nullptr);
+        for (const fh1::WorldChunk& chunk : everywhere->chunks()) {
+            QVERIFY(chunk.zones.empty());
+        }
+
+        // The renderer draws the backdrop only from zone 1.
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QOpenGLContext context;
+        context.setFormat(format);
+        QOffscreenSurface surface;
+        surface.setFormat(format);
+        surface.create();
+        if (!context.create() || !context.makeCurrent(&surface)) {
+            QSKIP("no OpenGL 3.3 context available to check drawing");
+        }
+        const fh1::WorldTileGrid grid(*index, 500.0F);
+        WorldRenderer renderer;
+        QVERIFY2(renderer.initialize(), qPrintable(renderer.errorString()));
+        renderer.setGrid(&grid);
+        WorldCamera camera;
+        camera.pitch = -1.5F;
+        const QSize size(32, 32);
+        QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
+        fbo.bind();
+        for (const auto& [x, expectedCalls] : {std::pair{100.0F, 1}, std::pair{250.0F, 2}}) {
+            camera.position = QVector3D(x, 400.0F, rowPitch / 2);
+            for (const TileRequest& request : renderer.requests(camera, {})) {
+                renderer.upload(request.tile, request.state, fh1::buildTileMesh(archive, *index, request.chunks));
+            }
+            QCOMPARE(renderer.draw(camera, size).drawCalls, expectedCalls);
+        }
+        fbo.release();
+        renderer.release();
     }
 
     void encodesDxtAndBuildsMipChains()

@@ -117,9 +117,11 @@ int main(int argc, char** argv)
             pvs = file.readAll();
         }
     }
+    const QString zoneGridPath = install.trackZoneGridPath(track);
     // Same signature as the viewer's, so both share the cache.
     const QString signature = fh1::WorldIndex::archiveSignature(archivePath) + QLatin1Char('|')
-        + fh1::WorldIndex::archiveSignature(pvsPath);
+        + fh1::WorldIndex::archiveSignature(pvsPath) + QLatin1Char('|')
+        + fh1::WorldIndex::archiveSignature(zoneGridPath);
     std::optional<fh1::WorldIndex> index = fh1::WorldIndex::load(cachePath, signature);
     if (!index) {
         std::optional<fh1::TrackPlacements> placements;
@@ -130,7 +132,14 @@ int main(int argc, char** argv)
                 std::fprintf(stderr, "Props are not placed: %s\n", qPrintable(placementError));
             }
         }
-        index = fh1::WorldIndex::build(archive, {}, nullptr, placements ? &*placements : nullptr);
+        QString zoneError = QStringLiteral("the track has no zone grid file");
+        const std::optional<fh1::ZoneGrid> zones
+            = zoneGridPath.isEmpty() ? std::nullopt : fh1::ZoneGrid::readFile(zoneGridPath, &zoneError);
+        if (!zones) {
+            std::fprintf(stderr, "The backdrop terrain is drawn from everywhere: %s\n", qPrintable(zoneError));
+        }
+        index = fh1::WorldIndex::build(
+            archive, {}, nullptr, placements ? &*placements : nullptr, zones ? &*zones : nullptr);
         if (!index) {
             return fail(QStringLiteral("could not index %1").arg(archivePath));
         }
