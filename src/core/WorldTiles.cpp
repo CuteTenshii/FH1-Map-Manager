@@ -105,8 +105,9 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
     const TrackTextures* textures)
 {
     TileMesh out;
-    // Indices per batch texture, concatenated into out.indices at the end.
-    std::map<std::uint32_t, std::vector<std::uint32_t>> batchIndices;
+    // Indices per (backdrop, texture), concatenated into out.indices at the
+    // end.
+    std::map<std::pair<bool, std::uint32_t>, std::vector<std::uint32_t>> batchIndices;
     const auto& entries = archive.entries();
     const auto fail = [&out](std::uint32_t chunk, const QString& error) {
         ++out.failedChunks;
@@ -172,7 +173,7 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
                         == model.textures.end()) {
                     model.textures.push_back(source.texture);
                 }
-                std::vector<std::uint32_t>& target = batchIndices[source.texture];
+                std::vector<std::uint32_t>& target = batchIndices[{chunk.backdrop, source.texture}];
                 for (std::uint32_t v : material.triangles) {
                     if (remap[v] == TileMesh::kNoTexture) {
                         remap[v] = static_cast<std::uint32_t>(out.vertexCount());
@@ -193,12 +194,12 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
         }
         out.models.push_back(std::move(model));
     }
-    for (auto& [texture, indices] : batchIndices) {
+    for (auto& [key, indices] : batchIndices) {
         if (indices.empty()) {
             continue;
         }
-        out.batches.push_back(
-            {texture, static_cast<std::uint32_t>(out.indices.size()), static_cast<std::uint32_t>(indices.size())});
+        out.batches.push_back({key.second, static_cast<std::uint32_t>(out.indices.size()),
+            static_cast<std::uint32_t>(indices.size()), key.first});
         out.indices.insert(out.indices.end(), indices.begin(), indices.end());
     }
     return out;

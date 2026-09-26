@@ -558,13 +558,42 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
 
     const auto& tiles = m_grid->tiles();
+    std::vector<std::size_t> visible;
     for (std::size_t i = 0; i < tiles.size(); ++i) {
-        const GpuTile& gpu = m_tiles[i];
-        if (gpu.vao == 0 || !boxVisible(planes, tiles[i].boundsMin, tiles[i].boundsMax)) {
-            continue;
+        if (m_tiles[i].vao != 0 && boxVisible(planes, tiles[i].boundsMin, tiles[i].boundsMax)) {
+            visible.push_back(i);
+            ++stats.drawnTiles;
+            stats.drawnTriangles += m_tiles[i].indexCount / 3;
         }
+    }
+    // The backdrop terrain lies within a few metres of the detailed ground
+    // where both exist, often above it. Drawing it into the back half of the
+    // depth range makes any other geometry win wherever they overlap, while
+    // the backdrop still shows, in place, where it is alone.
+    for (const bool backdrop : {false, true}) {
+        glDepthRange(backdrop ? kForegroundDepthFar : 0.0, backdrop ? 1.0 : kForegroundDepthFar);
+        drawBatches(visible, backdrop, texturedLocation, stats);
+    }
+    glDepthRange(0.0, 1.0);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    m_program->release();
+    // QPainter draws the overlay into the same framebuffer next and expects
+    // depth testing off.
+    glDisable(GL_DEPTH_TEST);
+    return stats;
+}
+
+void WorldRenderer::drawBatches(
+    const std::vector<std::size_t>& visible, bool backdrop, int texturedLocation, Stats& stats)
+{
+    for (const std::size_t i : visible) {
+        const GpuTile& gpu = m_tiles[i];
         glBindVertexArray(gpu.vao);
         for (const fh1::TileMesh::Batch& batch : gpu.batches) {
+            if (batch.backdrop != backdrop) {
+                continue;
+            }
             GLuint name = 0;
             if (batch.texture != fh1::TileMesh::kNoTexture) {
                 const auto it = m_textures.find(batch.texture);
@@ -580,14 +609,5 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
                     static_cast<std::uintptr_t>(batch.firstIndex) * sizeof(std::uint32_t)));
             ++stats.drawCalls;
         }
-        ++stats.drawnTiles;
-        stats.drawnTriangles += gpu.indexCount / 3;
     }
-    glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    m_program->release();
-    // QPainter draws the overlay into the same framebuffer next and expects
-    // depth testing off.
-    glDisable(GL_DEPTH_TEST);
-    return stats;
 }

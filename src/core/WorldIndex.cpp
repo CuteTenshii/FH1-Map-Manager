@@ -20,7 +20,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 4;
+constexpr quint32 kCacheVersion = 5;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -40,6 +40,14 @@ bool isHelperGeometry(const QString& partName)
         QStringLiteral("_CAGE\\d*(_|$)|^Underground|ShadowCaster|ShadowBox|^Shadow_"),
         QRegularExpression::CaseInsensitiveOption);
     return pattern.match(partName).hasMatch();
+}
+
+/// The far terrain of the whole map ("TERR_UberLOD_Patch07_LOD00",
+/// "TERR_UberLOD_Patch18"). It lies within a few metres of the detailed
+/// ground where both exist, and alone beyond the drivable area.
+bool isBackdrop(const QString& partName)
+{
+    return partName.contains(QLatin1String("UberLOD"), Qt::CaseInsensitive);
 }
 
 } // namespace
@@ -92,6 +100,7 @@ std::optional<WorldIndex> WorldIndex::build(
         chunk.boundsMax = header->boundsMax;
         chunk.lod = static_cast<std::int8_t>(std::clamp(rendermesh::lodLevel(header->firstPartName), -1, 3));
         chunk.group = group.value();
+        chunk.backdrop = isBackdrop(header->firstPartName);
         index.m_chunks.push_back(chunk);
     }
     if (progress) {
@@ -176,7 +185,7 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
     }
     out << static_cast<quint32>(m_chunks.size());
     for (const WorldChunk& c : m_chunks) {
-        out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group;
+        out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group << c.backdrop;
     }
     if (!file.commit()) {
         if (error != nullptr) {
@@ -225,7 +234,7 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
     index.m_chunks.resize(chunkCount);
     for (WorldChunk& c : index.m_chunks) {
         qint8 lod = 0;
-        in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group;
+        in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group >> c.backdrop;
         c.lod = lod;
     }
     if (in.status() != QDataStream::Ok) {

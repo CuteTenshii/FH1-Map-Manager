@@ -1,5 +1,7 @@
 #include "EntityRenderer.h"
 
+#include "WorldRenderer.h"
+
 #include <QFontMetricsF>
 #include <QHash>
 #include <QOpenGLShaderProgram>
@@ -743,6 +745,9 @@ void EntityRenderer::draw(const QMatrix4x4& worldViewProjection, QSize viewport,
     glViewport(0, 0, viewport.width(), viewport.height());
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
+    // The same depth values as the world's own geometry, so the world hides
+    // what is behind it but the backdrop terrain never does.
+    glDepthRange(0.0, WorldRenderer::kForegroundDepthFar);
     // Markers and routes overlap each other freely; only the world hides them.
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
@@ -814,6 +819,7 @@ void EntityRenderer::draw(const QMatrix4x4& worldViewProjection, QSize viewport,
     glBindVertexArray(0);
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
+    glDepthRange(0.0, 1.0);
     // QPainter draws the overlay into the same framebuffer next and expects
     // depth testing off.
     glDisable(GL_DEPTH_TEST);

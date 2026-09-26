@@ -112,6 +112,11 @@ public:
     /// Maps world coordinates (Z north) straight to clip space for `camera`,
     /// for anything drawn over the world or projected onto the screen.
     QMatrix4x4 worldViewProjection(const WorldCamera& camera, QSize viewport) const;
+    /// draw() puts everything but the backdrop terrain into depth values
+    /// [0, kForegroundDepthFar], and the backdrop behind it; anything drawn
+    /// over the world and depth-tested against it uses the same front part.
+    static constexpr double kForegroundDepthFar = 0.5;
+
     /// Colour and distance scale of the fog draw() applies.
     static QVector3D fogColour();
     float fogDistance() const { return m_viewDistance * kFogFraction; }
@@ -151,6 +156,9 @@ private:
     };
 
     void releaseTile(GpuTile& tile);
+    /// Draws the batches of the `visible` tiles that are (or are not)
+    /// backdrop terrain, with the world program bound.
+    void drawBatches(const std::vector<std::size_t>& visible, bool backdrop, int texturedLocation, Stats& stats);
     void addTextureUser(std::uint32_t id);
     void removeTextureUser(std::uint32_t id);
     void deleteTexture(GpuTexture& texture);

@@ -45,7 +45,8 @@ private:
 
 /// Geometry of one tile state, ready for upload: interleaved position
 /// (x, y, z), normal (x, y, z) and texture coordinate (u, v) floats, and
-/// triangle-list indices grouped into one batch per diffuse texture.
+/// triangle-list indices grouped into one batch per diffuse texture, with
+/// backdrop terrain in batches of its own.
 struct TileMesh {
     static constexpr int kFloatsPerVertex = 8;
     /// Batch texture of geometry without a known diffuse texture.
@@ -55,6 +56,8 @@ struct TileMesh {
         std::uint32_t texture = kNoTexture;
         std::uint32_t firstIndex = 0;
         std::uint32_t indexCount = 0;
+        /// Geometry of backdrop chunks (WorldChunk::backdrop).
+        bool backdrop = false;
     };
 
     /// One model file that went into the mesh, or failed to.

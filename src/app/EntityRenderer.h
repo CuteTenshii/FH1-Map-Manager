@@ -26,7 +26,8 @@ class QPainter;
 /// Polylines are lines of a fixed screen width, widened by a geometry shader
 /// because core-profile OpenGL only guarantees one-pixel lines. Zones are
 /// translucent fills with their outline. Everything is depth-tested against
-/// the world, so hills hide what is behind them.
+/// the world, so hills hide what is behind them; the map-wide backdrop
+/// terrain never does (see WorldRenderer::kForegroundDepthFar).
 ///
 /// Every method that touches OpenGL needs the context initialize() ran in to
 /// be current.

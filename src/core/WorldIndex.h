@@ -29,6 +29,9 @@ struct WorldChunk {
     std::uint32_t group = 0;
     float bandStart = 0.0F;
     float bandEnd = std::numeric_limits<float>::infinity();
+    /// Part of the map-wide far terrain, which only shows where no other
+    /// geometry covers the same ground (see WorldRenderer).
+    bool backdrop = false;
 };
 
 /// The world-space render models of a track, found by reading only the header

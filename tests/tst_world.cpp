@@ -1120,8 +1120,12 @@ private slots:
         ground.texcoords = {{0, 0}, {65535, 0}, {0, 65535}, {65535, 65535}};
         const TestTail tail{{{0, {0}}}, {QStringLiteral("shaders\\track\\h_diff_1.fx")}};
         const auto [header, top] = bixTexture(8, qRgb(230, 20, 20));
+        // The map-wide far terrain, a few metres above the textured ground,
+        // as it often is in the game's data.
+        const TestPart backdrop = quad(QStringLiteral("TERR_UberLOD_Patch18"), 300, 300, 4, 400);
         const QString archivePath = writeZip(dir,
             {{QStringLiteral("track.00000.rmb.bin"), renderModel({ground}, tail)},
+                {QStringLiteral("track.00001.rmb.bin"), renderModel({backdrop})},
                 {QStringLiteral("shaders/track/h_diff_1.fxobj"), shaderObject({0x3007, 0x205008})},
                 {QStringLiteral("_0x00000077.bix"), header}, {QStringLiteral("_0x00000077_B.bix"), top}});
         fh1::ForzaZip archive;
@@ -1130,6 +1134,21 @@ private slots:
         QVERIFY(textures.has_value());
         const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive);
         QVERIFY(index.has_value());
+        QCOMPARE(index->chunks().size(), std::size_t{2});
+        const auto backdropChunk = std::find_if(
+            index->chunks().begin(), index->chunks().end(), [](const fh1::WorldChunk& c) { return c.backdrop; });
+        QVERIFY(backdropChunk != index->chunks().end());
+        QCOMPARE(std::count_if(index->chunks().begin(), index->chunks().end(),
+                     [](const fh1::WorldChunk& c) { return c.backdrop; }),
+            1);
+        // The flag survives the index cache.
+        const QString cache = dir.filePath(QStringLiteral("world.index"));
+        QVERIFY(index->save(cache, QStringLiteral("sig")));
+        const std::optional<fh1::WorldIndex> reloaded = fh1::WorldIndex::load(cache, QStringLiteral("sig"));
+        QVERIFY(reloaded.has_value());
+        for (std::size_t i = 0; i < index->chunks().size(); ++i) {
+            QCOMPARE(reloaded->chunks()[i].backdrop, index->chunks()[i].backdrop);
+        }
         const fh1::WorldTileGrid grid(*index, 500.0F);
 
         WorldRenderer renderer;
@@ -1141,8 +1160,13 @@ private slots:
         camera.pitch = -1.2F;
         const auto requests = renderer.requests(camera, {});
         QCOMPARE(requests.size(), std::size_t{1});
-        renderer.upload(
-            requests[0].tile, requests[0].state, fh1::buildTileMesh(archive, *index, requests[0].chunks, &*textures));
+        const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, requests[0].chunks, &*textures);
+        QCOMPARE(mesh.batches.size(), std::size_t{2});
+        QCOMPARE(
+            std::count_if(mesh.batches.begin(), mesh.batches.end(),
+                [](const fh1::TileMesh::Batch& b) { return b.backdrop && b.texture == fh1::TileMesh::kNoTexture; }),
+            1);
+        renderer.upload(requests[0].tile, requests[0].state, mesh);
         QVERIFY(renderer.texturesPending());
         const std::vector<std::uint32_t> wanted = renderer.takeTextureRequests();
         QCOMPARE(wanted, (std::vector<std::uint32_t>{0x77}));
@@ -1160,8 +1184,9 @@ private slots:
         const WorldRenderer::Stats stats = renderer.draw(camera, size);
         fbo.release();
         const QImage image = fbo.toImage();
-        QCOMPARE(stats.drawCalls, 1);
-        // The ground shows the red texture, lit.
+        QCOMPARE(stats.drawCalls, 2);
+        // The ground shows the red texture, lit, although the untextured
+        // backdrop terrain lies above it.
         const QColor centre = image.pixelColor(32, 32);
         QVERIFY2(centre.red() > 2 * centre.green() && centre.red() > 2 * centre.blue(), qPrintable(centre.name()));
 

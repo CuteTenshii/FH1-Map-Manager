@@ -130,6 +130,7 @@ With these rules, all 230,057 entries of `tracks/colorado/bin.zip` and every oth
 - **Coordinates:** positions have Z negated compared with the placement XMLs and the 2D map.
 - **Duplicates:** most models are stored several times under the same name with identical contents; Colorado has 14,291 distinct models.
 - **Local-space props:** models centred on the origin are props in local space.
+- **Backdrop terrain:** `TERR_UberLOD_*` models are a low-detail terrain for the whole map. Where detailed terrain exists they lie within a few metres of it, sometimes up to 9 m above it; beyond the drivable area they are the only ground. Their level names start at `LOD00` like everything else (and `TERR_UberLOD_Patch18` has none), so distance bands alone would draw them close up. The viewer draws them behind all other geometry instead, so they only show where nothing else covers the ground.
 - **Level of detail:** comes from the `_LODnn` part of the name.
 - **Vertices:** after the position come 4-byte inputs in the order of the shader's input table (normal, texture coordinates, tangent, colour). Texture coordinates are two unsigned 16-bit fractions, mapped through the material's offset and scale.
 
