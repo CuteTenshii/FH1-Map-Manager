@@ -13,7 +13,6 @@
 #include "WorldTiles.h"
 
 #include <QCommandLineParser>
-#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
@@ -118,12 +117,9 @@ int main(int argc, char** argv)
     std::optional<fh1::TrackTextures> textures;
     if (!parser.isSet(untexturedOption)) {
         QString textureError = QStringLiteral("the track has no PVS file");
-        const QString ribbon = install.resolve(QStringLiteral("tracks/%1/Ribbon_00").arg(track));
-        const QStringList pvsFiles = ribbon.isEmpty()
-            ? QStringList()
-            : QDir(ribbon).entryList({QStringLiteral("*.pvs")}, QDir::Files, QDir::Name);
-        if (!pvsFiles.isEmpty()) {
-            QFile pvs(QDir(ribbon).filePath(pvsFiles.first()));
+        const QString pvsPath = install.trackPvsPath(track);
+        if (!pvsPath.isEmpty()) {
+            QFile pvs(pvsPath);
             if (pvs.open(QIODevice::ReadOnly)) {
                 textures = fh1::TrackTextures::load(pvs.readAll(), archive, &textureError);
             } else {

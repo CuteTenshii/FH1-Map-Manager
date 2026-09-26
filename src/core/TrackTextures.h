@@ -71,21 +71,10 @@ std::optional<ShaderLayout> readShaderLayout(const QByteArray& fxobj);
 /// Which of the track's textures each render model uses, and how to read
 /// them.
 ///
-/// The track's PVS file (`Ribbon_00/<Track>_00.pvs`, magic "FPVS", big-endian)
-/// holds, after its zone table:
-///
-///     u32 N, N texture records of 28 bytes:
-///         u32 texture id, u32 record number, f32 1, f32 1, u32 0, u32 0,
-///         u32 flags
-///     u32 count, shader paths (u32 length, text)
-///     u32 count, 18-byte draw records
-///     u32 count, one record per render object:
-///         u32 n, n texture record numbers, u32 m, m shader numbers,
-///         15 floats (orientation and bounding box)
-///
-/// Render object i is the file `<track>.<i>.rmb.bin`. A material's texture
-/// slots index the object's texture list, and slot 0 holds the diffuse
-/// texture in every shader the track uses (its sampler register 0).
+/// The track's PVS file (see PvsTables) lists the textures of each render
+/// object; render object i is the file `<track>.<i>.rmb.bin`. A material's
+/// texture slots index the object's texture list, and slot 0 holds the
+/// diffuse texture in every shader the track uses (its sampler register 0).
 ///
 /// A texture id names either `_0x<ID>.bix` (header and small mips) with
 /// `_0x<ID>_B.bix` (top level), or `_0x<ID>.bin` (a CAFF container).

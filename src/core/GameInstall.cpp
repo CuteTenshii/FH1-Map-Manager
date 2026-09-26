@@ -80,4 +80,18 @@ QStringList GameInstall::trackFolders() const
     return result;
 }
 
+QString GameInstall::trackPvsPath(const QString& track) const
+{
+    const QString ribbon = resolve(QStringLiteral("tracks/%1/Ribbon_00").arg(track));
+    if (ribbon.isEmpty()) {
+        return {};
+    }
+    QString named = resolve(QStringLiteral("tracks/%1/Ribbon_00/%1_00.pvs").arg(track));
+    if (!named.isEmpty()) {
+        return named;
+    }
+    const QStringList files = QDir(ribbon).entryList({QStringLiteral("*.pvs")}, QDir::Files, QDir::Name);
+    return files.isEmpty() ? QString() : QDir(ribbon).filePath(files.first());
+}
+
 } // namespace fh1

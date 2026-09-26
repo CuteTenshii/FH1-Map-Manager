@@ -22,6 +22,7 @@ endif()
 add_library(fh1core STATIC
     src/core/Activities.cpp
     src/core/Activities.h
+    src/core/BigEndianCursor.h
     src/core/ForzaZip.cpp
     src/core/ForzaZip.h
     src/core/GameDatabase.cpp
@@ -37,6 +38,8 @@ add_library(fh1core STATIC
     src/core/MapData.h
     src/core/MapLoader.cpp
     src/core/MapLoader.h
+    src/core/PvsFile.cpp
+    src/core/PvsFile.h
     src/core/RenderMesh.cpp
     src/core/RenderMesh.h
     src/core/StringTable.cpp

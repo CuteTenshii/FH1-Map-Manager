@@ -26,6 +26,10 @@ public:
     /// Track folders under media/tracks that have ribbon data.
     QStringList trackFolders() const;
 
+    /// The track's PVS file, "Ribbon_00/<Track>_00.pvs" or else the first
+    /// .pvs file there, or an empty string.
+    QString trackPvsPath(const QString& track) const;
+
     /// Case-insensitive lookup of one child name inside `dir`.
     static QString findChild(const QDir& dir, const QString& name);
 

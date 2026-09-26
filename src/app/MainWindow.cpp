@@ -58,21 +58,6 @@ QString worldCacheDirectory()
     return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/world");
 }
 
-/// The track's PVS file, "Ribbon_00/<Track>_00.pvs", or an empty string.
-QString trackPvsPath(const fh1::GameInstall& install, const QString& track)
-{
-    const QString ribbon = install.resolve(QStringLiteral("tracks/%1/Ribbon_00").arg(track));
-    if (ribbon.isEmpty()) {
-        return {};
-    }
-    QString named = install.resolve(QStringLiteral("tracks/%1/Ribbon_00/%1_00.pvs").arg(track));
-    if (!named.isEmpty()) {
-        return named;
-    }
-    const QStringList files = QDir(ribbon).entryList({QStringLiteral("*.pvs")}, QDir::Files, QDir::Name);
-    return files.isEmpty() ? QString() : QDir(ribbon).filePath(files.first());
-}
-
 constexpr int kLayerRole = Qt::UserRole;
 constexpr int kGroupRole = Qt::UserRole + 1;
 constexpr int kBackgroundLayer = -1;
@@ -1191,7 +1176,7 @@ void MainWindow::ensureWorld()
     // Deleting the cache while the index is being built would race it.
     m_clearCacheAction->setEnabled(false);
     const QString cachePath = QStringLiteral("%1/%2.index").arg(worldCacheDirectory(), m_trackName.toLower());
-    const QString pvsPath = trackPvsPath(m_install, m_trackName);
+    const QString pvsPath = m_install.trackPvsPath(m_trackName);
     const QPointer<MainWindow> guard(this);
     auto cancel = m_worldCancel;
     statusBar()->showMessage(tr("Opening the 3D world…"));
