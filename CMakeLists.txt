@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FH1_BUILD_TESTS "Build the unit tests" ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Sql Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
 
 qt_standard_project_setup()
@@ -53,13 +53,43 @@ add_library(fh1core STATIC
 target_include_directories(fh1core PUBLIC src/core)
 target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Concurrent ZLIB::ZLIB)
 
+# The viewer's widgets, kept in a library so the tests can exercise them.
+add_library(fh1viewer STATIC
+    src/app/BackgroundItem.cpp
+    src/app/BackgroundItem.h
+    src/app/FeatureTableModel.cpp
+    src/app/FeatureTableModel.h
+    src/app/LayerItem.cpp
+    src/app/LayerItem.h
+    src/app/LoadedFiles.h
+    src/app/MainWindow.cpp
+    src/app/MainWindow.h
+    src/app/MapView.cpp
+    src/app/MapView.h
+    src/app/WorldDebugPanel.cpp
+    src/app/WorldDebugPanel.h
+    src/app/WorldRenderer.cpp
+    src/app/WorldRenderer.h
+    src/app/WorldView3D.cpp
+    src/app/WorldView3D.h
+)
+target_include_directories(fh1viewer PUBLIC src/app)
+target_link_libraries(fh1viewer PUBLIC fh1core Qt6::Widgets Qt6::Concurrent Qt6::OpenGL Qt6::OpenGLWidgets)
+
+qt_add_executable(fh1mapviewer WIN32 MACOSX_BUNDLE src/app/main.cpp)
+target_compile_definitions(fh1mapviewer PRIVATE FH1_VERSION="${PROJECT_VERSION}")
+target_link_libraries(fh1mapviewer PRIVATE fh1viewer)
+
 qt_add_executable(fh1zip tools/fh1zip.cpp)
 target_link_libraries(fh1zip PRIVATE fh1core)
+
+qt_add_executable(fh1render tools/fh1render.cpp)
+target_link_libraries(fh1render PRIVATE fh1viewer)
 
 qt_add_executable(fh1meshscan tools/fh1meshscan.cpp)
 target_link_libraries(fh1meshscan PRIVATE fh1core)
 
-install(TARGETS fh1zip
+install(TARGETS fh1mapviewer fh1zip
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
@@ -80,5 +110,7 @@ if(FH1_BUILD_TESTS)
     fh1_add_test(tst_forzazip fh1core ZLIB::ZLIB)
     fh1_add_test(tst_loaders fh1core)
     fh1_add_test(tst_labels fh1core)
+    fh1_add_test(tst_viewer fh1viewer)
+    fh1_add_test(tst_world fh1viewer ZLIB::ZLIB)
     fh1_add_test(tst_realdata fh1core)
 endif()
