@@ -155,8 +155,6 @@ private:
     std::shared_ptr<std::atomic<bool>> m_worldCancel;
     /// Track whose world is loaded or loading into the 3D view.
     QString m_worldTrack;
-    /// The satellite image, kept for the 3D view's terrain colour.
-    QImage m_satellite;
     bool m_showWorld3D = false;
     WorldView3D* m_world3D = nullptr;
     QAction* m_view2DAction = nullptr;

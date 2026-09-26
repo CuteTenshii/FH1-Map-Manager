@@ -1,8 +1,8 @@
 #include "WorldRenderer.h"
 
+#include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
-#include <QOpenGLTexture>
 
 #include <algorithm>
 #include <array>
@@ -44,33 +44,17 @@ in vec2 vTexcoord;
 out vec4 fragColour;
 uniform sampler2D uDiffuse;
 uniform bool uTextured;
-uniform sampler2D uSatellite;
-uniform bool uHasSatellite;
-uniform vec4 uCalibration;
-uniform vec2 uImageSize;
 uniform vec3 uCamera;
 uniform vec3 uSunDirection;
 uniform vec3 uFogColour;
 uniform float uFogDistance;
 
-// Geometry without a loaded texture: the satellite photo draped from
-// above, or a flat ground colour away from it and in its black border.
+// Geometry without a loaded texture: a plain ground colour, greener where
+// the surface is level and a neutral rock tone on steep faces.
 vec3 untexturedColour(float up)
 {
-    vec3 base = mix(vec3(0.46, 0.43, 0.37), vec3(0.40, 0.44, 0.33), up);
-    if (uHasSatellite) {
-        vec2 pixel = vec2(uCalibration.x * vPosition.x + uCalibration.y, uCalibration.z * vPosition.z + uCalibration.w);
-        vec2 uv = pixel / uImageSize;
-        if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)))) {
-            vec3 texel = texture(uSatellite, uv).rgb;
-            if (dot(texel, vec3(1.0)) > 0.04) {
-                base = texel;
-            }
-        }
-    }
-    // A top-down photo smears down cliffs and walls; steep faces get a
-    // neutral rock tone instead.
-    return mix(vec3(0.42, 0.40, 0.37), base, smoothstep(0.35, 0.75, up));
+    vec3 ground = mix(vec3(0.46, 0.43, 0.37), vec3(0.40, 0.44, 0.33), up);
+    return mix(vec3(0.42, 0.40, 0.37), ground, smoothstep(0.35, 0.75, up));
 }
 
 void main()
@@ -109,8 +93,7 @@ constexpr GLenum kTextureMaxAnisotropy = 0x84FE;
 constexpr GLenum kMaxTextureMaxAnisotropy = 0x84FF;
 constexpr float kWantedAnisotropy = 8.0F;
 
-constexpr GLuint kSatelliteUnit = 0;
-constexpr GLuint kDiffuseUnit = 1;
+constexpr GLuint kDiffuseUnit = 0;
 
 /// Frustum planes (a, b, c, d with a*x + b*y + c*z + d >= 0 inside) from a
 /// combined projection matrix, by the Gribb-Hartmann method.
@@ -192,7 +175,6 @@ bool WorldRenderer::initialize()
         m_program.reset();
         return false;
     }
-    m_satelliteDirty = !m_satellite.isNull();
     m_initialized = true;
     return true;
 }
@@ -209,11 +191,9 @@ void WorldRenderer::release()
         deleteTexture(texture);
     }
     m_textures.clear();
-    m_satelliteTexture.reset();
     m_program.reset();
     m_uploadedTriangles = 0;
     m_initialized = false;
-    m_satelliteDirty = !m_satellite.isNull();
 }
 
 void WorldRenderer::setGrid(const fh1::WorldTileGrid* grid)
@@ -232,13 +212,6 @@ void WorldRenderer::setGrid(const fh1::WorldTileGrid* grid)
     m_grid = grid;
     m_tiles.assign(grid != nullptr ? grid->tiles().size() : 0, GpuTile{});
     m_uploadedTriangles = 0;
-}
-
-void WorldRenderer::setSatellite(const QImage& image, const fh1::MapCalibration& calibration)
-{
-    m_satellite = image.isNull() ? QImage() : image.convertToFormat(QImage::Format_RGBA8888);
-    m_calibration = calibration;
-    m_satelliteDirty = true;
 }
 
 void WorldRenderer::releaseTile(GpuTile& tile)
@@ -433,30 +406,6 @@ bool WorldRenderer::texturesPending() const
     });
 }
 
-void WorldRenderer::uploadSatellite()
-{
-    m_satelliteDirty = false;
-    m_satelliteTexture.reset();
-    if (m_satellite.isNull()) {
-        return;
-    }
-    // Row 0 of the image becomes texture row 0, so texture coordinate v is
-    // the image row divided by the height, like the calibration's pixel Y.
-    m_satelliteTexture = std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target2D);
-    m_satelliteTexture->setSize(m_satellite.width(), m_satellite.height());
-    // Plain RGBA, not sRGB: lighting and fog are applied to the stored values
-    // and the result goes to the framebuffer without gamma conversion.
-    m_satelliteTexture->setFormat(QOpenGLTexture::RGBA8_UNorm);
-    m_satelliteTexture->setMipLevels(m_satelliteTexture->maximumMipLevels());
-    m_satelliteTexture->allocateStorage(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8);
-    m_satelliteTexture->setData(
-        0, QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, static_cast<const void*>(m_satellite.constBits()));
-    m_satelliteTexture->generateMipMaps();
-    m_satelliteTexture->setMinificationFilter(QOpenGLTexture::LinearMipMapLinear);
-    m_satelliteTexture->setMagnificationFilter(QOpenGLTexture::Linear);
-    m_satelliteTexture->setWrapMode(QOpenGLTexture::ClampToEdge);
-}
-
 std::vector<TileRequest> WorldRenderer::requests(const WorldCamera& camera, const std::vector<int>& inFlightState) const
 {
     std::vector<TileRequest> result;
@@ -593,9 +542,6 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     if (m_grid == nullptr) {
         return stats;
     }
-    if (m_satelliteDirty) {
-        uploadSatellite();
-    }
     const QMatrix4x4 viewProj = viewProjection(camera, viewport);
     const auto planes = frustumPlanes(viewProj * worldToRender());
 
@@ -607,18 +553,6 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     m_program->setUniformValue("uSunDirection", QVector3D(0.45F, 0.8F, 0.35F).normalized());
     m_program->setUniformValue("uFogColour", kFogColour);
     m_program->setUniformValue("uFogDistance", fogDistance());
-    const bool haveSatellite = m_satelliteTexture != nullptr;
-    m_program->setUniformValue("uHasSatellite", haveSatellite);
-    m_program->setUniformValue("uCalibration",
-        QVector4D(static_cast<float>(m_calibration.scaleX), static_cast<float>(m_calibration.offsetX),
-            static_cast<float>(m_calibration.scaleZ), static_cast<float>(m_calibration.offsetY)));
-    if (haveSatellite) {
-        m_program->setUniformValue(
-            "uImageSize", QVector2D(static_cast<float>(m_satellite.width()), static_cast<float>(m_satellite.height())));
-        glActiveTexture(GL_TEXTURE0 + kSatelliteUnit);
-        m_satelliteTexture->bind();
-    }
-    m_program->setUniformValue("uSatellite", static_cast<GLint>(kSatelliteUnit));
     m_program->setUniformValue("uDiffuse", static_cast<GLint>(kDiffuseUnit));
     const int texturedLocation = m_program->uniformLocation("uTextured");
     glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
@@ -651,10 +585,6 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     }
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0 + kSatelliteUnit);
-    if (haveSatellite) {
-        m_satelliteTexture->release();
-    }
     m_program->release();
     // QPainter draws the overlay into the same framebuffer next and expects
     // depth testing off.

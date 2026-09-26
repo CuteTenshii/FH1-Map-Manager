@@ -75,7 +75,7 @@ fh1mapviewer DISC --select BF_CUDA_426BF_CLOSEDC --screenshot car.png
 
 ```sh
 fh1render DISC out.png --camera 1600,400,-2400,60,-12   # x,y,z, heading (0 = east, 90 = north), pitch
-fh1render DISC out.png --untextured                      # satellite colouring only
+fh1render DISC out.png --untextured                      # plain ground colours, no textures
 fh1render DISC out.png --layers gameobjs,airoutes        # with map layers and their labels
 ```
 

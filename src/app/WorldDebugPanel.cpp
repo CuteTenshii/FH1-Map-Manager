@@ -715,7 +715,7 @@ void WorldDebugPanel::onModelSelected()
         return;
     }
     m_modelDetails->setText(row->model.textures.empty()
-            ? tr("%1 has no textures; it is drawn with the satellite map's colours.").arg(row->file)
+            ? tr("%1 has no textures; it is drawn in a plain ground colour.").arg(row->file)
             : tr("Textures of %1:").arg(row->file));
     for (std::uint32_t id : row->model.textures) {
         const LoadedTexture* texture = m_textureTable->texture(id);

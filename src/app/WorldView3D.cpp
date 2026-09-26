@@ -62,7 +62,7 @@ void WorldView3D::releaseGL()
 }
 
 void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::shared_ptr<const fh1::WorldIndex> index,
-    std::shared_ptr<const fh1::TrackTextures> textures, const QImage& satellite, const fh1::MapCalibration& calibration)
+    std::shared_ptr<const fh1::TrackTextures> textures)
 {
     clearWorld();
     m_archive = std::move(archive);
@@ -74,7 +74,6 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
         makeCurrent();
     }
     m_renderer.setGrid(m_grid.get());
-    m_renderer.setSatellite(satellite, calibration);
     if (m_renderer.isReady()) {
         doneCurrent();
     }
@@ -366,7 +365,7 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
             }
             lines << line;
         } else {
-            lines << tr("No texture tables for this track; showing the satellite map");
+            lines << tr("No texture tables for this track, so nothing is textured");
         }
         if (m_failedChunks > 0) {
             lines << tr("%n mesh file(s) failed to load", nullptr, m_failedChunks);

@@ -60,7 +60,7 @@ int main(int argc, char** argv)
     const QCommandLineOption distanceOption(QStringLiteral("distance"), QStringLiteral("View distance in metres."),
         QStringLiteral("metres"), QStringLiteral("9000"));
     const QCommandLineOption untexturedOption(
-        QStringLiteral("untextured"), QStringLiteral("Colour everything from the satellite map instead."));
+        QStringLiteral("untextured"), QStringLiteral("Draw without the game's textures, in plain ground colours."));
     const QCommandLineOption layersOption(QStringLiteral("layers"),
         QStringLiteral("Comma-separated map layer ids to draw over the world, with their labels (gameobjs, airoutes, "
                        "trackroutes, collobjs, particles, nav, ppzones)."),
@@ -157,7 +157,6 @@ int main(int argc, char** argv)
     }
     renderer.setViewDistance(parser.value(distanceOption).toFloat());
     renderer.setGrid(&grid);
-    renderer.setSatellite(map.background, map.calibration);
 
     const std::vector<TileRequest> requests = renderer.requests(camera, {});
     const std::vector<fh1::TileMesh> meshes

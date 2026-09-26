@@ -624,9 +624,6 @@ void MainWindow::onLoadFinished()
     m_map = std::move(result.map);
     m_trackName = m_map->trackName;
     QSettings().setValue(QStringLiteral("lastTrack"), m_trackName);
-    // buildScene() turns the image into pixmaps and drops it from m_map; the
-    // 3D view keeps its own copy for the terrain colour.
-    m_satellite = m_map->background;
     if (m_worldCancel) {
         m_worldCancel->store(true);
     }
@@ -1271,7 +1268,7 @@ void MainWindow::onWorldLoaded()
         }
         return;
     }
-    m_world3D->setWorld(result.archive, result.index, result.textures, m_satellite, m_map->calibration);
+    m_world3D->setWorld(result.archive, result.index, result.textures);
     placeWorldCamera();
     QString message = tr("3D world: %1 meshes; %2 prop models are not placed yet")
                           .arg(result.index->chunks().size())

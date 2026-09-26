@@ -2,14 +2,12 @@
 
 #include "EntityRenderer.h"
 #include "ForzaZip.h"
-#include "MapCalibration.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
 #include "WorldRenderer.h"
 #include "WorldTiles.h"
 
 #include <QElapsedTimer>
-#include <QImage>
 #include <QOpenGLWidget>
 #include <QSet>
 #include <QThreadPool>
@@ -23,8 +21,7 @@
 /// Tiles are decoded and merged on worker threads (buildTileMesh) and handed
 /// to a WorldRenderer, which uploads a few per frame and draws them. The
 /// textures the tiles use are decoded on the same threads once the tiles are
-/// in. Geometry without a texture is coloured from the satellite map image
-/// through the 2D map's calibration.
+/// in. Geometry without a known texture gets a plain ground colour.
 class WorldView3D : public QOpenGLWidget {
     Q_OBJECT
 
@@ -34,11 +31,9 @@ public:
     explicit WorldView3D(QWidget* parent = nullptr);
     ~WorldView3D() override;
 
-    /// Shows a world. `textures` and `satellite` may be null. Replaces any
-    /// previous world.
+    /// Shows a world. `textures` may be null. Replaces any previous world.
     void setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::shared_ptr<const fh1::WorldIndex> index,
-        std::shared_ptr<const fh1::TrackTextures> textures, const QImage& satellite,
-        const fh1::MapCalibration& calibration);
+        std::shared_ptr<const fh1::TrackTextures> textures);
     void clearWorld();
     bool hasWorld() const { return m_index != nullptr; }
 

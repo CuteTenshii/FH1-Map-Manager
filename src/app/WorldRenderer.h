@@ -1,10 +1,8 @@
 #pragma once
 
 #include "LoadedFiles.h"
-#include "MapCalibration.h"
 #include "WorldTiles.h"
 
-#include <QImage>
 #include <QMatrix4x4>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QSize>
@@ -15,7 +13,6 @@
 #include <vector>
 
 class QOpenGLShaderProgram;
-class QOpenGLTexture;
 
 /// Camera for the 3D world, in world coordinates (X east, Y up, Z north).
 struct WorldCamera {
@@ -36,8 +33,8 @@ struct TileRequest {
     std::vector<std::uint32_t> chunks;
 };
 
-/// OpenGL side of the 3D world: tile buffers, the game's textures, the
-/// satellite texture, shaders and drawing. Every method that touches OpenGL needs the context that
+/// OpenGL side of the 3D world: tile buffers, the game's textures, shaders
+/// and drawing. Every method that touches OpenGL needs the context that
 /// initialize() ran in to be current. Used by the interactive view and by
 /// offscreen rendering.
 class WorldRenderer : protected QOpenGLFunctions_3_3_Core {
@@ -75,7 +72,6 @@ public:
     /// Uses `grid` (which must outlive the renderer or the next setGrid) and
     /// forgets previous tiles.
     void setGrid(const fh1::WorldTileGrid* grid);
-    void setSatellite(const QImage& image, const fh1::MapCalibration& calibration);
     void setViewDistance(float metres) { m_viewDistance = metres; }
     float viewDistance() const { return m_viewDistance; }
 
@@ -158,7 +154,6 @@ private:
     void addTextureUser(std::uint32_t id);
     void removeTextureUser(std::uint32_t id);
     void deleteTexture(GpuTexture& texture);
-    void uploadSatellite();
     QMatrix4x4 viewProjection(const WorldCamera& camera, QSize viewport) const;
 
     const fh1::WorldTileGrid* m_grid = nullptr;
@@ -170,12 +165,7 @@ private:
     bool m_compressedTextures = false;
     float m_maxAnisotropy = 1.0F;
 
-    QImage m_satellite;
-    fh1::MapCalibration m_calibration;
-    bool m_satelliteDirty = false;
-
     bool m_initialized = false;
     QString m_error;
     std::unique_ptr<QOpenGLShaderProgram> m_program;
-    std::unique_ptr<QOpenGLTexture> m_satelliteTexture;
 };
