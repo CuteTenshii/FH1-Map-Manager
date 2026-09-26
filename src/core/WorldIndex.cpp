@@ -21,7 +21,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 6;
+constexpr quint32 kCacheVersion = 7;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -31,14 +31,17 @@ constexpr float kNoLodRangePerMetre = 15.0F;
 
 /// Meshes that are not visible world surface: boundary walls
 /// ("UberLOD23_CAGE_LOD00", "TERR_UberLOD_Patch10_CAGE003_LOD00"), a shell
-/// around the whole map ("Underground_NOLOD") and shadow-casting stand-ins
+/// around the whole map ("Underground_NOLOD"), shadow-casting stand-ins
 /// ("FT02_ShadowCaster_LOD01", "SHADOWBOX_MOUNTAINS_AREA04_LOD01",
-/// "Shadow_Terrain_Area04_LOD02"). Drawn without the game's materials they
-/// show up as large grey blocks.
+/// "Shadow_Terrain_Area04_LOD02"), and a crude copy of the scene
+/// ("TERR_CUBE_MainTown_Area3_12", "TERR_CUBE_Plains_Area04_4"): ground,
+/// roads and buildings as plain blocks, most likely what the game renders
+/// into its reflection cube maps. Every surface of that copy exists in full
+/// detail elsewhere; drawn, its buildings stick out as grey blocks.
 bool isHelperGeometry(const QString& partName)
 {
     static const QRegularExpression pattern(
-        QStringLiteral("_CAGE\\d*(_|$)|^Underground|ShadowCaster|ShadowBox|^Shadow_"),
+        QStringLiteral("_CAGE\\d*(_|$)|^Underground|ShadowCaster|ShadowBox|^Shadow_|^TERR_CUBE_"),
         QRegularExpression::CaseInsensitiveOption);
     return pattern.match(partName).hasMatch();
 }

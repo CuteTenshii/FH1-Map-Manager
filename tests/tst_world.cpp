@@ -71,6 +71,7 @@ struct TestMaterial {
     quint32 tableIndex = 0;
     /// Texture coordinate offset u, v and scale u, v.
     std::array<float, 4> uvOffsetScale{0.0F, 0.0F, 1.0F, 1.0F};
+    QString name = QStringLiteral("Mat0");
 };
 
 struct TestPart {
@@ -159,9 +160,10 @@ QByteArray renderModel(const QList<TestPart>& parts, const std::optional<TestTai
         be32(d, static_cast<quint32>(part.materials.size()));
         be32(d, 1);
         for (const TestMaterial& material : part.materials) {
+            const QByteArray name = material.name.toLatin1();
             be32(d, 2);
-            be32(d, 4);
-            d.append("Mat0");
+            be32(d, static_cast<quint32>(name.size()));
+            d.append(name);
             be32(d, 0);
             be32(d, 6);
             be32(d, material.tableIndex);
@@ -704,11 +706,14 @@ private slots:
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         // A sign modelled around its own origin, at two levels of detail, a
-        // bench that is never placed, and ground.
+        // bench that is never placed, and helper geometry.
         const QByteArray signNear = renderModel({quad(QStringLiteral("Sign_LOD00"), 0, 0, 0, 1)});
         const QByteArray signFar = renderModel({quad(QStringLiteral("Sign_LOD01"), 0, 0, 0, 1)});
         const QByteArray bench = renderModel({quad(QStringLiteral("Bench_LOD00"), 0, 0, 0, 1)});
         const QByteArray ground = renderModel({quad(QStringLiteral("Terrain_LOD00_01"), 600, 600, 0, 100)});
+        const QByteArray cube = renderModel({quad(QStringLiteral("TERR_CUBE_MainTown_Area3_12"), 600, 600, 0, 50)});
+        const TestTail effectTail{{{0, {-1}}}, {QStringLiteral("shaders\\track\\light_pollution.fx")}};
+        const QByteArray glow = renderModel({quad(QStringLiteral("Plane001"), 700, 700, 50, 20)}, effectTail);
         // Draws: 0 = sign LOD00 (in no zone), 1 = sign LOD01, 2 = sign LOD00
         // of a second sign, 3 = sign LOD01 of it.
         const QList<quint16> draws{1, 2, 1, 2};
@@ -721,6 +726,8 @@ private slots:
                 {QStringLiteral("coloradoout.00001.rmb.bin"), signNear},
                 {QStringLiteral("coloradoout.00002.rmb.bin"), signFar},
                 {QStringLiteral("coloradoout.00003.rmb.bin"), bench},
+                {QStringLiteral("coloradoout.00004.rmb.bin"), cube},
+                {QStringLiteral("coloradoout.00005.rmb.bin"), glow},
                 {QStringLiteral("__R00Z00000.pvsz"), zoneFile({a, b})},
                 // Zones overlap: the second repeats draw 2 and adds draw 3.
                 {QStringLiteral("__R00Z00001.pvsz"), zoneFile({b, c})},
@@ -729,7 +736,7 @@ private slots:
         QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
         QString error;
         const std::optional<fh1::TrackPlacements> placements
-            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}, {}}, draws), archive, nullptr, &error);
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}, {}, {}, {}}, draws), archive, nullptr, &error);
         QVERIFY2(placements.has_value(), qPrintable(error));
         QCOMPARE(placements->zoneCount(), 2);
         QCOMPARE(placements->failedZones(), 0);
@@ -740,10 +747,10 @@ private slots:
 
         const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
         QVERIFY(index.has_value());
-        // The ground and four sign draws; the bench, never placed, is
-        // counted.
+        // The ground, the effect plane and four sign draws; the cube copy is
+        // left out and the bench, never placed, is counted.
         QCOMPARE(index->placedCount(), 4);
-        QCOMPARE(index->chunks().size(), std::size_t{5});
+        QCOMPARE(index->chunks().size(), std::size_t{6});
         QCOMPARE(index->localModelCount(), 1);
         std::vector<const fh1::WorldChunk*> signs;
         for (const fh1::WorldChunk& chunk : index->chunks()) {
@@ -784,6 +791,14 @@ private slots:
             // Still facing up after the turn.
             QVERIFY(vertex[4] > 0.99F);
         }
+        // The light pollution plane is an effect, not a surface.
+        const auto glowChunk = std::find_if(index->chunks().begin(), index->chunks().end(),
+            [](const fh1::WorldChunk& chunk) { return !chunk.placed && chunk.boundsMin.y() > 40.0F; });
+        QVERIFY(glowChunk != index->chunks().end());
+        const fh1::TileMesh glowMesh
+            = fh1::buildTileMesh(archive, *index, {static_cast<std::uint32_t>(glowChunk - index->chunks().begin())});
+        QCOMPARE(glowMesh.failedChunks, 0);
+        QVERIFY(glowMesh.indices.empty());
 
         // Without placements, props are only counted.
         const std::optional<fh1::WorldIndex> unplaced = fh1::WorldIndex::build(archive);
@@ -954,6 +969,28 @@ private slots:
         wrongVersion[3] = 7;
         QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::rendermesh::parse(wrongVersion, {}));
         QVERIFY(!fh1::rendermesh::readHeader(wrongVersion.left(fh1::rendermesh::kHeaderBytes)).has_value());
+    }
+
+    void skipsPlaceholderMaterials()
+    {
+        // A terrain piece whose second material is the placeholder of
+        // unfinished geometry and whose third marks a crowd area.
+        TestPart part = quad(QStringLiteral("TERR_Zone1_Area1_00"), 600, 600, 0, 100);
+        part.materials.push_back({{1, 2, 3}, 2});
+        part.materials.back().name = QStringLiteral("Placeholder001");
+        part.materials.push_back({{0, 2, 3}, 2});
+        part.materials.back().name = QStringLiteral("CrowdTERR");
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        fh1::ForzaZip archive;
+        QVERIFY(archive.open(writeZip(dir, {{QStringLiteral("coloradoout.00000.rmb.bin"), renderModel({part})}})));
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive);
+        QVERIFY(index.has_value());
+        QCOMPARE(index->chunks().size(), std::size_t{1});
+        const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, {0});
+        QCOMPARE(mesh.failedChunks, 0);
+        // The two triangles of the first material; none of the others.
+        QCOMPARE(mesh.indices.size(), std::size_t{6});
     }
 
     void lodNames()

@@ -79,6 +79,32 @@ struct DiffuseSource {
     int texcoordOffset = -1;
 };
 
+/// Materials that are not visible surfaces:
+/// - a lighting effect, such as the glow of the town's lights over the night
+///   sky ("light_pollution.fx" on a 1 km plane), which drawn as a surface
+///   becomes a large opaque wall;
+/// - the placeholder material ("Placeholder001") of an abandoned set of
+///   terrain pieces ("Area04", "TERR_Zone1_Area1_00"), textured "THIS OBJECT
+///   DOES NOT HAVE A FORZA MATERIAL" and partly below the ground. On
+///   Colorado 63 models use it and only it;
+/// - crowd areas ("CrowdTERR" on "Plane004_LOD00" and the like): flat
+///   polygons just above the ground, textured with an orange tile grid,
+///   that mark where spectators stand. On Colorado 48 models use it and
+///   only it.
+bool isNotSurface(const RenderMesh& mesh, const RenderMesh::Material& material)
+{
+    if (material.name.startsWith(QLatin1String("Placeholder"), Qt::CaseInsensitive)
+        || material.name.compare(QLatin1String("CrowdTERR"), Qt::CaseInsensitive) == 0) {
+        return true;
+    }
+    if (material.tableIndex >= mesh.materialTable.size()) {
+        return false;
+    }
+    const std::uint32_t shader = mesh.materialTable[material.tableIndex].shader;
+    return shader < static_cast<std::uint32_t>(mesh.shaders.size())
+        && mesh.shaders[static_cast<qsizetype>(shader)].contains(QLatin1String("light_pollution"), Qt::CaseInsensitive);
+}
+
 DiffuseSource diffuseSource(const RenderMesh& mesh, const RenderMesh::Part& part, const RenderMesh::Material& material,
     const std::vector<std::uint32_t>* objectTextures, const TrackTextures& textures)
 {
@@ -177,6 +203,9 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
             const std::vector<QVector3D>& positions = chunk.placed ? placedPositions : part.positions;
             std::vector<QVector3D> normals(positions.size());
             for (const RenderMesh::Material& material : part.materials) {
+                if (isNotSurface(mesh, material)) {
+                    continue;
+                }
                 for (std::size_t t = 0; t + 2 < material.triangles.size(); t += 3) {
                     const std::uint32_t a = material.triangles[t];
                     const std::uint32_t b = material.triangles[t + 1];
@@ -195,6 +224,9 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
             // texture transforms, so every material gets its own copies.
             std::vector<std::uint32_t> remap(positions.size());
             for (const RenderMesh::Material& material : part.materials) {
+                if (isNotSurface(mesh, material)) {
+                    continue;
+                }
                 const DiffuseSource source = textures != nullptr
                     ? diffuseSource(mesh, part, material, objectTextures, *textures)
                     : DiffuseSource{};

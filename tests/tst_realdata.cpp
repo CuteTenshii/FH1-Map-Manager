@@ -155,9 +155,10 @@ private slots:
         const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive);
         QVERIFY(index.has_value());
         // 102,012 model entries hold 14,291 distinct models; about 2,300 are
-        // local-space props (not placed without the zone files) and a few
-        // dozen are cages and shadow casters.
-        QVERIFY2(index->chunks().size() > 11500 && index->chunks().size() < 12500,
+        // local-space props (not placed without the zone files), about 1,100
+        // the crude TERR_CUBE copy of the scene, and a few dozen cages and
+        // shadow casters.
+        QVERIFY2(index->chunks().size() > 10500 && index->chunks().size() < 11200,
             qPrintable(QString::number(index->chunks().size())));
         QVERIFY(index->localModelCount() > 2000 && index->localModelCount() < 2600);
         QSet<QString> names;
