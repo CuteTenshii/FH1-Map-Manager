@@ -1,0 +1,207 @@
+#include "WorldTiles.h"
+
+#include "Loaders.h"
+#include "RenderMesh.h"
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+
+namespace fh1 {
+
+WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize)
+    : m_index(index)
+{
+    const QRectF footprint = index.footprint();
+    const auto& chunks = index.chunks();
+    std::map<std::pair<int, int>, std::size_t> tileByCell;
+    for (std::uint32_t i = 0; i < chunks.size(); ++i) {
+        const WorldChunk& chunk = chunks[i];
+        const QVector3D centre = (chunk.boundsMin + chunk.boundsMax) / 2.0F;
+        const int cx = static_cast<int>(std::floor((centre.x() - footprint.left()) / tileSize));
+        const int cz = static_cast<int>(std::floor((centre.z() - footprint.top()) / tileSize));
+        auto [it, inserted] = tileByCell.try_emplace({cx, cz}, m_tiles.size());
+        if (inserted) {
+            Tile tile;
+            tile.boundsMin = chunk.boundsMin;
+            tile.boundsMax = chunk.boundsMax;
+            m_tiles.push_back(std::move(tile));
+        }
+        Tile& tile = m_tiles[it->second];
+        tile.chunks.push_back(i);
+        tile.boundsMin = QVector3D(std::min(tile.boundsMin.x(), chunk.boundsMin.x()),
+            std::min(tile.boundsMin.y(), chunk.boundsMin.y()), std::min(tile.boundsMin.z(), chunk.boundsMin.z()));
+        tile.boundsMax = QVector3D(std::max(tile.boundsMax.x(), chunk.boundsMax.x()),
+            std::max(tile.boundsMax.y(), chunk.boundsMax.y()), std::max(tile.boundsMax.z(), chunk.boundsMax.z()));
+    }
+    for (Tile& tile : m_tiles) {
+        for (std::uint32_t c : tile.chunks) {
+            tile.edges.push_back(chunks[c].bandStart);
+            tile.edges.push_back(chunks[c].bandEnd);
+        }
+        std::sort(tile.edges.begin(), tile.edges.end());
+        tile.edges.erase(std::unique(tile.edges.begin(), tile.edges.end()), tile.edges.end());
+    }
+}
+
+float WorldTileGrid::distanceTo(const Tile& tile, float x, float z) const
+{
+    const float dx = std::max({tile.boundsMin.x() - x, 0.0F, x - tile.boundsMax.x()});
+    const float dz = std::max({tile.boundsMin.z() - z, 0.0F, z - tile.boundsMax.z()});
+    return std::hypot(dx, dz);
+}
+
+int WorldTileGrid::stateAt(const Tile& tile, float distance) const
+{
+    return static_cast<int>(std::upper_bound(tile.edges.begin(), tile.edges.end(), distance) - tile.edges.begin());
+}
+
+std::vector<std::uint32_t> WorldTileGrid::chunksAt(const Tile& tile, float distance) const
+{
+    std::vector<std::uint32_t> result;
+    const auto& chunks = m_index.chunks();
+    for (std::uint32_t c : tile.chunks) {
+        if (distance >= chunks[c].bandStart && distance < chunks[c].bandEnd) {
+            result.push_back(c);
+        }
+    }
+    return result;
+}
+
+namespace {
+
+/// The diffuse texture of `material` and where its texture coordinates sit
+/// in a vertex, if both are known.
+struct DiffuseSource {
+    std::uint32_t texture = TileMesh::kNoTexture;
+    int texcoordOffset = -1;
+};
+
+DiffuseSource diffuseSource(const RenderMesh& mesh, const RenderMesh::Part& part, const RenderMesh::Material& material,
+    const std::vector<std::uint32_t>* objectTextures, const TrackTextures& textures)
+{
+    if (objectTextures == nullptr || material.tableIndex >= mesh.materialTable.size()) {
+        return {};
+    }
+    const RenderMesh::MaterialInfo& info = mesh.materialTable[material.tableIndex];
+    // Slot 0 is sampler register 0, the diffuse (or first blend layer)
+    // texture of every track shader.
+    if (info.textureSlots.empty() || info.textureSlots.front() < 0
+        || static_cast<std::size_t>(info.textureSlots.front()) >= objectTextures->size()
+        || info.shader >= static_cast<std::uint32_t>(mesh.shaders.size())) {
+        return {};
+    }
+    const ShaderLayout* layout = textures.shader(mesh.shaders[static_cast<qsizetype>(info.shader)]);
+    if (layout == nullptr || layout->texcoord0Offset < 0
+        || static_cast<std::uint32_t>(layout->texcoord0Offset) + 4 > part.stride) {
+        return {};
+    }
+    return {(*objectTextures)[static_cast<std::size_t>(info.textureSlots.front())], layout->texcoord0Offset};
+}
+
+} // namespace
+
+TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const std::vector<std::uint32_t>& chunks,
+    const TrackTextures* textures)
+{
+    TileMesh out;
+    // Indices per batch texture, concatenated into out.indices at the end.
+    std::map<std::uint32_t, std::vector<std::uint32_t>> batchIndices;
+    const auto& entries = archive.entries();
+    const auto fail = [&out](std::uint32_t chunk, const QString& error) {
+        ++out.failedChunks;
+        out.errors.append(error);
+        out.models.push_back({chunk, 0, {}, error});
+    };
+    for (std::uint32_t c : chunks) {
+        const WorldChunk& chunk = index.chunks()[c];
+        if (chunk.entry >= entries.size()) {
+            fail(c, QStringLiteral("chunk %1 refers to a missing archive entry").arg(c));
+            continue;
+        }
+        const ZipEntry& entry = entries[chunk.entry];
+        QString error;
+        const QByteArray data = archive.read(entry, &error);
+        if (data.isNull()) {
+            fail(c, error);
+            continue;
+        }
+        RenderMesh mesh;
+        try {
+            mesh = rendermesh::parse(data, entry.name);
+        } catch (const LoadError& e) {
+            fail(c, QString::fromStdString(e.what()));
+            continue;
+        }
+        TileMesh::Model model;
+        model.chunk = c;
+        model.triangles = static_cast<std::uint32_t>(mesh.triangleCount());
+        const std::vector<std::uint32_t>* objectTextures = nullptr;
+        if (textures != nullptr) {
+            if (const std::optional<std::uint32_t> object = TrackTextures::objectNumber(entry.name)) {
+                objectTextures = textures->objectTextures(*object);
+            }
+        }
+        for (const RenderMesh::Part& part : mesh.parts) {
+            std::vector<QVector3D> normals(part.positions.size());
+            for (const RenderMesh::Material& material : part.materials) {
+                for (std::size_t t = 0; t + 2 < material.triangles.size(); t += 3) {
+                    const std::uint32_t a = material.triangles[t];
+                    const std::uint32_t b = material.triangles[t + 1];
+                    const std::uint32_t d = material.triangles[t + 2];
+                    // Unnormalized, so larger triangles weigh more in the
+                    // average. Flipping Z mirrored the geometry and reversed
+                    // its winding, hence the swapped operands.
+                    const QVector3D n = QVector3D::crossProduct(
+                        part.positions[d] - part.positions[a], part.positions[b] - part.positions[a]);
+                    normals[a] += n;
+                    normals[b] += n;
+                    normals[d] += n;
+                }
+            }
+            // Materials sharing a vertex can map it through different
+            // texture transforms, so every material gets its own copies.
+            std::vector<std::uint32_t> remap(part.positions.size());
+            for (const RenderMesh::Material& material : part.materials) {
+                const DiffuseSource source = textures != nullptr
+                    ? diffuseSource(mesh, part, material, objectTextures, *textures)
+                    : DiffuseSource{};
+                std::fill(remap.begin(), remap.end(), TileMesh::kNoTexture);
+                if (source.texture != TileMesh::kNoTexture
+                    && std::find(model.textures.begin(), model.textures.end(), source.texture)
+                        == model.textures.end()) {
+                    model.textures.push_back(source.texture);
+                }
+                std::vector<std::uint32_t>& target = batchIndices[source.texture];
+                for (std::uint32_t v : material.triangles) {
+                    if (remap[v] == TileMesh::kNoTexture) {
+                        remap[v] = static_cast<std::uint32_t>(out.vertexCount());
+                        const QVector3D& p = part.positions[v];
+                        QVector3D n = normals[v].normalized();
+                        if (n.isNull()) {
+                            n = QVector3D(0.0F, 1.0F, 0.0F);
+                        }
+                        const QVector2D uv = source.texcoordOffset >= 0
+                            ? RenderMesh::texcoord(part, material, v, source.texcoordOffset)
+                            : QVector2D();
+                        out.vertices.insert(
+                            out.vertices.end(), {p.x(), p.y(), p.z(), n.x(), n.y(), n.z(), uv.x(), uv.y()});
+                    }
+                    target.push_back(remap[v]);
+                }
+            }
+        }
+        out.models.push_back(std::move(model));
+    }
+    for (auto& [texture, indices] : batchIndices) {
+        if (indices.empty()) {
+            continue;
+        }
+        out.batches.push_back(
+            {texture, static_cast<std::uint32_t>(out.indices.size()), static_cast<std::uint32_t>(indices.size())});
+        out.indices.insert(out.indices.end(), indices.begin(), indices.end());
+    }
+    return out;
+}
+
+} // namespace fh1

@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FH1_BUILD_TESTS "Build the unit tests" ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Sql)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Sql Concurrent)
 find_package(ZLIB REQUIRED)
 
 qt_standard_project_setup()
@@ -37,16 +37,27 @@ add_library(fh1core STATIC
     src/core/MapData.h
     src/core/MapLoader.cpp
     src/core/MapLoader.h
+    src/core/RenderMesh.cpp
+    src/core/RenderMesh.h
     src/core/StringTable.cpp
     src/core/StringTable.h
+    src/core/TrackTextures.cpp
+    src/core/TrackTextures.h
+    src/core/WorldIndex.cpp
+    src/core/WorldIndex.h
+    src/core/WorldTiles.cpp
+    src/core/WorldTiles.h
     src/core/XboxTexture.cpp
     src/core/XboxTexture.h
 )
 target_include_directories(fh1core PUBLIC src/core)
-target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE ZLIB::ZLIB)
+target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Concurrent ZLIB::ZLIB)
 
 qt_add_executable(fh1zip tools/fh1zip.cpp)
 target_link_libraries(fh1zip PRIVATE fh1core)
+
+qt_add_executable(fh1meshscan tools/fh1meshscan.cpp)
+target_link_libraries(fh1meshscan PRIVATE fh1core)
 
 install(TARGETS fh1zip
     BUNDLE DESTINATION .
@@ -69,4 +80,5 @@ if(FH1_BUILD_TESTS)
     fh1_add_test(tst_forzazip fh1core ZLIB::ZLIB)
     fh1_add_test(tst_loaders fh1core)
     fh1_add_test(tst_labels fh1core)
+    fh1_add_test(tst_realdata fh1core)
 endif()
