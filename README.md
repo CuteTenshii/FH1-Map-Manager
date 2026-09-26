@@ -149,4 +149,6 @@ With these rules, all 230,057 entries of `tracks/colorado/bin.zip` and every oth
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Forza Horizon and its data belong to their owners. This project is not affiliated with them.
+This library is licensed under the MIT License. See [LICENSE](LICENSE)
+
+Forza and Forza Horizon are trademarks of Microsoft Corporation. Forza Horizon was developed by Playground Games and published by Microsoft Studios, and the game's data belongs to Microsoft. This project is not affiliated with or endorsed by Microsoft or Playground Games.
