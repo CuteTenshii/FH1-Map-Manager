@@ -1,3 +1,4 @@
+#include "EntityRenderer.h"
 #include "ForzaZip.h"
 #include "Loaders.h"
 #include "RenderMesh.h"
@@ -12,6 +13,7 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
+#include <QPainter>
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -888,6 +890,139 @@ private slots:
         const QColor sky(179, 199, 219);
         QVERIFY2(
             std::abs(centre.red() - sky.red()) + std::abs(centre.blue() - sky.blue()) > 30, qPrintable(centre.name()));
+    }
+
+    void drawsAndPicksMapEntities()
+    {
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QOpenGLContext context;
+        context.setFormat(format);
+        QOffscreenSurface surface;
+        surface.setFormat(format);
+        surface.create();
+        if (!context.create() || !context.makeCurrent(&surface)) {
+            QSKIP("no OpenGL 3.3 context available");
+        }
+
+        // Two groups of markers, a route and a zone, around (0, 0, 60).
+        auto map = std::make_shared<fh1::MapData>();
+        fh1::Layer points;
+        points.id = QStringLiteral("gameobjs");
+        points.kind = fh1::FeatureKind::Point;
+        const auto point = [](const QString& name, const QString& group, float x, float z) {
+            fh1::Feature f;
+            f.name = name;
+            f.label = name;
+            f.group = group;
+            f.position = QVector3D(x, 0.0F, z);
+            return f;
+        };
+        points.features = {point(QStringLiteral("Big A"), QStringLiteral("A"), -10, 60),
+            point(QStringLiteral("Big B"), QStringLiteral("A"), 10, 60),
+            point(QStringLiteral("Small"), QStringLiteral("B"), 0, 70)};
+        fh1::Layer routes;
+        routes.id = QStringLiteral("airoutes");
+        routes.kind = fh1::FeatureKind::Polyline;
+        fh1::Feature route;
+        route.name = QStringLiteral("route");
+        route.shapes = {{QVector3D(-40, 0, 45), QVector3D(40, 0, 45)}};
+        route.position = route.shapes[0][0];
+        routes.features = {route};
+        fh1::Layer zones;
+        zones.id = QStringLiteral("ppzones");
+        zones.kind = fh1::FeatureKind::Polygon;
+        fh1::Feature zone;
+        zone.name = QStringLiteral("zone");
+        zone.shapes = {{QVector3D(20, 0, 80), QVector3D(40, 0, 80), QVector3D(30, 0, 95)}};
+        zone.position = QVector3D(30, 0, 85);
+        zones.features = {zone};
+        map->layers = {points, routes, zones};
+
+        WorldRenderer world;
+        QVERIFY2(world.initialize(), qPrintable(world.errorString()));
+        world.setViewDistance(2000.0F);
+        EntityRenderer entities;
+        QVERIFY2(entities.initialize(), qPrintable(entities.errorString()));
+        // Group B of the markers starts hidden.
+        entities.setMap(map, {{true, false}, {true}, {true}});
+        QVERIFY(entities.isGroupVisible(0, 0));
+        QVERIFY(!entities.isGroupVisible(0, 1));
+        QVERIFY(!entities.isFeatureShown({0, 2}));
+
+        WorldCamera camera;
+        camera.position = QVector3D(0.0F, 60.0F, 0.0F);
+        camera.yaw = 1.5708F;
+        camera.pitch = -0.75F;
+        const QSize size(320, 240);
+        const QMatrix4x4 matrix = world.worldViewProjection(camera, size);
+        const auto screenOf = [&](const QVector3D& p) {
+            const QVector4D clip = matrix * QVector4D(p, 1.0F);
+            return QPointF(
+                (clip.x() / clip.w() * 0.5 + 0.5) * size.width(), (0.5 - clip.y() / clip.w() * 0.5) * size.height());
+        };
+        const QVector3D lift(0.0F, EntityRenderer::kPointLift, 0.0F);
+        const QPointF bigA = screenOf(QVector3D(-10, 0, 60) + lift);
+        const QPointF small = screenOf(QVector3D(0, 0, 70) + lift);
+
+        QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
+        fbo.bind();
+        world.draw(camera, size);
+        entities.draw(matrix, size, camera.position, world.fogDistance(), WorldRenderer::fogColour(), 1.0F);
+        fbo.release();
+        const QImage image = fbo.toImage();
+        const QColor sky = image.pixelColor(2, 2);
+        const QColor markerA = image.pixelColor(bigA.toPoint());
+        const QColor groupA = map->layers.empty() ? QColor() : LayerStyle::of(map->layers[0], 0).groupColors[0];
+        QVERIFY2(std::abs(markerA.red() - groupA.red()) + std::abs(markerA.green() - groupA.green())
+                    + std::abs(markerA.blue() - groupA.blue())
+                < 60,
+            qPrintable(markerA.name()));
+        // The hidden group leaves the sky showing.
+        QCOMPARE(image.pixelColor(small.toPoint()), sky);
+
+        // Picking: the marker, nothing at the hidden one, the route, the zone.
+        const auto pick
+            = [&](const QPointF& at) { return entities.pick(matrix, size, camera.position, at, 8.0, 2000.0F, 1.0F); };
+        const auto hitA = pick(bigA + QPointF(3, 2));
+        QVERIFY(hitA.has_value());
+        QCOMPARE(hitA->layer, 0);
+        QCOMPARE(hitA->feature, 0);
+        QVERIFY(!pick(small).has_value());
+        entities.setGroupVisible(0, 1, true);
+        QVERIFY(pick(small).has_value());
+        const auto hitRoute = pick(screenOf(QVector3D(25, 0.8F, 45)));
+        QVERIFY(hitRoute.has_value());
+        QCOMPARE(hitRoute->layer, 1);
+        const auto hitZone = pick(screenOf(QVector3D(30, 0.3F, 85)));
+        QVERIFY(hitZone.has_value());
+        QCOMPARE(hitZone->layer, 2);
+        QVERIFY(!pick(QPointF(2, 2)).has_value());
+
+        // Labels come nearest first; far ones are left out.
+        const auto labels = entities.labels(matrix, size, camera.position, 2000.0F, 1.0F);
+        QCOMPARE(labels.size(), std::size_t{3});
+        QVERIFY(labels.front().distance <= labels.back().distance);
+        QVERIFY(entities.labels(matrix, size, camera.position, 10.0F, 1.0F).empty());
+        QImage canvas(size, QImage::Format_ARGB32);
+        canvas.fill(Qt::transparent);
+        QPainter painter(&canvas);
+        QVERIFY(EntityRenderer::paintLabels(painter, labels, QFont()) >= 1);
+        painter.end();
+
+        const auto [lo, hi] = entities.featureBounds({2, 0});
+        QCOMPARE(lo, QVector3D(20, 0, 80));
+        QCOMPARE(hi, QVector3D(40, 0, 95));
+
+        // A highlight is drawn over everything, even a hidden marker's spot.
+        entities.setHighlighted({0, 1});
+        QCOMPARE(entities.highlighted(), (EntityRenderer::FeatureRef{0, 1}));
+        entities.setMap(nullptr);
+        QVERIFY(!entities.pick(matrix, size, camera.position, bigA, 8.0, 2000.0F, 1.0F).has_value());
+        entities.release();
+        world.release();
     }
 
     void debugPanelListsAndPreviewsLoadedFiles()

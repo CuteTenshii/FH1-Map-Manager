@@ -558,6 +558,16 @@ bool WorldRenderer::evictDistant(const WorldCamera& camera)
     return evicted;
 }
 
+QMatrix4x4 WorldRenderer::worldViewProjection(const WorldCamera& camera, QSize viewport) const
+{
+    return viewProjection(camera, viewport) * worldToRender();
+}
+
+QVector3D WorldRenderer::fogColour()
+{
+    return kFogColour;
+}
+
 QMatrix4x4 WorldRenderer::viewProjection(const WorldCamera& camera, QSize viewport) const
 {
     const QMatrix4x4 toRender = worldToRender();
@@ -596,7 +606,7 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     m_program->setUniformValue("uCamera", camera.position);
     m_program->setUniformValue("uSunDirection", QVector3D(0.45F, 0.8F, 0.35F).normalized());
     m_program->setUniformValue("uFogColour", kFogColour);
-    m_program->setUniformValue("uFogDistance", m_viewDistance * 0.75F);
+    m_program->setUniformValue("uFogDistance", fogDistance());
     const bool haveSatellite = m_satelliteTexture != nullptr;
     m_program->setUniformValue("uHasSatellite", haveSatellite);
     m_program->setUniformValue("uCalibration",

@@ -132,6 +132,8 @@ private:
     /// Points the debug panel at the 3D view's current world, and refreshes
     /// its lists when it is visible.
     void onLoadedFilesChanged();
+    /// Which groups of each layer the 2D map shows, for the 3D view.
+    std::vector<std::vector<bool>> entityVisibility() const;
     void refreshDebugPanel();
     QTreeWidgetItem* groupTreeItem(int layer, int group) const;
 

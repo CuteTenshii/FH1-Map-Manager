@@ -102,20 +102,6 @@ bool groupShownByDefault(const QString& group)
         && !group.endsWith(QLatin1String("(car placement points)")) && group != QLatin1String("Event objects");
 }
 
-double markerRadiusFor(const QString& layerId)
-{
-    if (layerId == QLatin1String("gameobjs")) {
-        return 5.0;
-    }
-    if (layerId == QLatin1String("trackroutes")) {
-        return 4.0;
-    }
-    if (layerId == QLatin1String("nav")) {
-        return 2.0;
-    }
-    return 3.0;
-}
-
 QIcon swatch(const QColor& color)
 {
     QPixmap pixmap(14, 14);
@@ -170,6 +156,9 @@ MainWindow::MainWindow(QWidget* parent)
     m_stack->addWidget(m_world3D);
     setCentralWidget(m_stack);
     connect(&m_worldWatcher, &QFutureWatcher<WorldLoad>::finished, this, &MainWindow::onWorldLoaded);
+    connect(m_world3D, &WorldView3D::entityClicked, this,
+        [this](int layer, int feature) { selectFeature(layer, feature, false); });
+    connect(m_world3D, &WorldView3D::emptyClicked, this, &MainWindow::clearSelection);
 
     createActions();
     createDocks();
@@ -398,6 +387,19 @@ void MainWindow::createDocks()
     debugAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D));
     debugAction->setToolTip(tr("List the model and texture files the 3D world has loaded"));
     m_viewMenu->addAction(debugAction);
+}
+
+std::vector<std::vector<bool>> MainWindow::entityVisibility() const
+{
+    std::vector<std::vector<bool>> visible;
+    visible.reserve(m_layerItems.size());
+    for (const LayerItem* item : m_layerItems) {
+        std::vector<bool>& groups = visible.emplace_back();
+        for (int g = 0; g < item->groups().size(); ++g) {
+            groups.push_back(item->isVisible() && item->isGroupVisible(g));
+        }
+    }
+    return visible;
 }
 
 void MainWindow::onLoadedFilesChanged()
@@ -633,6 +635,7 @@ void MainWindow::onLoadFinished()
 
     buildScene();
     buildLayerTree();
+    m_world3D->setEntities(m_map, entityVisibility());
     m_model->setMap(m_map.get());
     applyFilter();
     m_noDataLabel->setText(tr("<p><b>Nothing to show for %1</b></p>"
@@ -801,6 +804,7 @@ void MainWindow::onLayerTreeChanged(QTreeWidgetItem* item, int column)
         return;
     }
     m_layerItems[static_cast<std::size_t>(layer)]->setGroupVisible(group, checked);
+    m_world3D->setEntityGroupVisible(layer, group, checked);
     if (!m_script) {
         saveLayerVisibility();
     }
@@ -841,8 +845,12 @@ void MainWindow::selectFeature(int layer, int feature, bool focus)
         }
     }
 
+    m_world3D->setHighlightedEntity(layer, feature);
     if (focus) {
         m_view->focusOn(item->featureBounds(feature), kFocusZoom);
+        if (m_showWorld3D) {
+            m_world3D->focusOnEntity(layer, feature);
+        }
     }
     showProperties();
 
@@ -872,6 +880,7 @@ void MainWindow::clearSelection()
         m_layerItems[static_cast<std::size_t>(m_selection.layer)]->setHighlightedFeature(-1);
     }
     m_selection = {};
+    m_world3D->setHighlightedEntity(-1, -1);
     m_properties->setRowCount(0);
     if (!m_syncingSelection) {
         m_syncingSelection = true;

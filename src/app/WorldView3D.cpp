@@ -23,6 +23,13 @@ constexpr int kTextureUploadsPerFrame = 24;
 /// comes first and textures fill in after it.
 constexpr int kTexturePriority = -1'000'000;
 constexpr int kTickMs = 16;
+/// A press and release closer than this many pixels is a click, not a drag.
+constexpr int kClickSlop = 4;
+constexpr double kPickTolerance = 8.0;
+/// Labels further away than this are too small to read and crowd the view.
+constexpr float kLabelDistance = 2500.0F;
+constexpr float kFocusMinDistance = 40.0F;
+constexpr float kFocusPitch = -0.45F;
 
 } // namespace
 
@@ -50,6 +57,7 @@ void WorldView3D::releaseGL()
     }
     makeCurrent();
     m_renderer.release();
+    m_entities.release();
     doneCurrent();
 }
 
@@ -136,6 +144,43 @@ void WorldView3D::setViewDistance(float metres)
     update();
 }
 
+void WorldView3D::setEntities(std::shared_ptr<const fh1::MapData> map, const std::vector<std::vector<bool>>& visible)
+{
+    m_entities.setMap(std::move(map), visible);
+    update();
+}
+
+void WorldView3D::setEntityGroupVisible(int layer, int group, bool visible)
+{
+    m_entities.setGroupVisible(layer, group, visible);
+    update();
+}
+
+void WorldView3D::setHighlightedEntity(int layer, int feature)
+{
+    m_entities.setHighlighted({layer, feature});
+    update();
+}
+
+void WorldView3D::focusOnEntity(int layer, int feature)
+{
+    const auto [lo, hi] = m_entities.featureBounds({layer, feature});
+    if (lo.isNull() && hi.isNull()) {
+        return;
+    }
+    QVector3D centre = (lo + hi) / 2.0F;
+    const float extent = std::max(hi.x() - lo.x(), hi.z() - lo.z());
+    if (lo == hi) {
+        // A point: aim at its marker, which is drawn raised off the ground.
+        centre.setY(centre.y() + EntityRenderer::kPointLift);
+    }
+    Camera camera = m_camera;
+    camera.pitch = kFocusPitch;
+    const float distance = std::max(kFocusMinDistance, extent * 1.2F);
+    camera.position = centre - camera.forward() * distance;
+    setCamera(camera);
+}
+
 void WorldView3D::requestTiles()
 {
     if (!m_grid) {
@@ -209,7 +254,9 @@ void WorldView3D::initializeGL()
     // the window first switches to OpenGL composition. Buffers and textures
     // belong to the old context and must be released while it still exists.
     connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, &WorldView3D::releaseGL, Qt::UniqueConnection);
-    m_renderer.initialize();
+    if (m_renderer.initialize()) {
+        m_entities.initialize();
+    }
     // Tiles of a previous context are gone; build them again for this one.
     std::fill(m_inFlight.begin(), m_inFlight.end(), -1);
     m_ready.clear();
@@ -255,7 +302,12 @@ void WorldView3D::paintGL()
             // Queued, so a slot that reads the renderer runs after painting.
             QMetaObject::invokeMethod(this, &WorldView3D::loadedFilesChanged, Qt::QueuedConnection);
         }
-        stats = m_renderer.draw(m_camera, size() * devicePixelRatioF());
+        const QSize viewport = size() * devicePixelRatioF();
+        stats = m_renderer.draw(m_camera, viewport);
+        if (m_entities.isReady()) {
+            m_entities.draw(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
+                m_renderer.fogDistance(), WorldRenderer::fogColour(), static_cast<float>(devicePixelRatioF()));
+        }
     }
     drawOverlay(stats);
 
@@ -278,6 +330,14 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+    if (m_renderer.isReady() && m_entities.map() != nullptr) {
+        // The painter works in logical pixels, so the labels are projected
+        // onto the logical viewport.
+        EntityRenderer::paintLabels(painter,
+            m_entities.labels(m_renderer.worldViewProjection(m_camera, size()), size(), m_camera.position,
+                std::min(kLabelDistance, m_renderer.viewDistance()), 1.0F),
+            font());
+    }
     QStringList lines;
     if (!m_renderer.isReady()) {
         lines << tr("The 3D view is unavailable: %1").arg(m_renderer.errorString());
@@ -311,7 +371,7 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
         if (m_failedChunks > 0) {
             lines << tr("%n mesh file(s) failed to load", nullptr, m_failedChunks);
         }
-        lines << tr("Drag: look   W A S D: move   Q E: down / up   Shift: faster   Wheel: speed %1 m/s")
+        lines << tr("Click: select   Drag: look   W A S D: move   Q E: down / up   Shift: faster   Wheel: speed %1 m/s")
                      .arg(m_speed, 0, 'f', 0);
     }
     const QFontMetrics metrics(font());
@@ -399,6 +459,7 @@ void WorldView3D::mousePressEvent(QMouseEvent* event)
 {
     m_looking = true;
     m_lastMouse = event->position().toPoint();
+    m_pressPosition = m_lastMouse;
     setFocus();
     event->accept();
 }
@@ -422,6 +483,21 @@ void WorldView3D::mouseReleaseEvent(QMouseEvent* event)
 {
     m_looking = false;
     event->accept();
+    const QPoint position = event->position().toPoint();
+    if (event->button() != Qt::LeftButton || (position - m_pressPosition).manhattanLength() > kClickSlop
+        || !m_renderer.isReady() || m_entities.map() == nullptr) {
+        return;
+    }
+    const auto ratio = static_cast<float>(devicePixelRatioF());
+    const QSize viewport = size() * devicePixelRatioF();
+    const std::optional<EntityRenderer::FeatureRef> hit
+        = m_entities.pick(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
+            event->position() * ratio, kPickTolerance * ratio, m_renderer.viewDistance(), ratio);
+    if (hit) {
+        emit entityClicked(hit->layer, hit->feature);
+    } else {
+        emit emptyClicked();
+    }
 }
 
 void WorldView3D::wheelEvent(QWheelEvent* event)

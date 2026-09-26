@@ -112,11 +112,21 @@ public:
     bool isComplete(const WorldCamera& camera) const;
 
     Stats draw(const WorldCamera& camera, QSize viewport);
+
+    /// Maps world coordinates (Z north) straight to clip space for `camera`,
+    /// for anything drawn over the world or projected onto the screen.
+    QMatrix4x4 worldViewProjection(const WorldCamera& camera, QSize viewport) const;
+    /// Colour and distance scale of the fog draw() applies.
+    static QVector3D fogColour();
+    float fogDistance() const { return m_viewDistance * kFogFraction; }
     qint64 uploadedTriangles() const { return m_uploadedTriangles; }
     int tileCount() const { return static_cast<int>(m_tiles.size()); }
     int loadedState(int tile) const { return m_tiles[static_cast<std::size_t>(tile)].state; }
 
 private:
+    /// Fog distance as a fraction of the view distance.
+    static constexpr float kFogFraction = 0.75F;
+
     struct GpuTile {
         GLuint vao = 0;
         GLuint vbo = 0;

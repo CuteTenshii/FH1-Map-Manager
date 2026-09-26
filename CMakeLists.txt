@@ -57,10 +57,14 @@ target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Co
 add_library(fh1viewer STATIC
     src/app/BackgroundItem.cpp
     src/app/BackgroundItem.h
+    src/app/EntityRenderer.cpp
+    src/app/EntityRenderer.h
     src/app/FeatureTableModel.cpp
     src/app/FeatureTableModel.h
     src/app/LayerItem.cpp
     src/app/LayerItem.h
+    src/app/LayerStyle.cpp
+    src/app/LayerStyle.h
     src/app/LoadedFiles.h
     src/app/MainWindow.cpp
     src/app/MainWindow.h

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LayerStyle.h"
 #include "MapData.h"
 
 #include <QColor>
@@ -41,12 +42,13 @@ public:
     const fh1::Layer& layer() const { return m_layer; }
     int layerIndex() const { return m_layerIndex; }
 
+    const LayerStyle& style() const { return m_style; }
     /// Group names ordered by feature count, largest first.
-    const QStringList& groups() const { return m_groups; }
-    int groupSize(int group) const { return m_groupSizes[static_cast<std::size_t>(group)]; }
-    QColor groupColor(int group) const { return m_groupColors[static_cast<std::size_t>(group)]; }
-    int groupOf(int feature) const { return m_featureGroup[static_cast<std::size_t>(feature)]; }
-    int groupIndex(const QString& name) const { return static_cast<int>(m_groups.indexOf(name)); }
+    const QStringList& groups() const { return m_style.groups; }
+    int groupSize(int group) const { return m_style.groupSizes[static_cast<std::size_t>(group)]; }
+    QColor groupColor(int group) const { return m_style.groupColors[static_cast<std::size_t>(group)]; }
+    int groupOf(int feature) const { return m_style.featureGroup[static_cast<std::size_t>(feature)]; }
+    int groupIndex(const QString& name) const { return static_cast<int>(m_style.groups.indexOf(name)); }
     bool isGroupVisible(int group) const { return m_groupVisible[static_cast<std::size_t>(group)]; }
     void setGroupVisible(int group, bool visible);
     bool isFeatureShown(int feature) const { return isVisible() && isGroupVisible(groupOf(feature)); }
@@ -79,10 +81,7 @@ protected:
     int m_highlighted = -1;
 
 private:
-    QStringList m_groups;
-    std::vector<int> m_featureGroup;
-    std::vector<int> m_groupSizes;
-    std::vector<QColor> m_groupColors;
+    LayerStyle m_style;
     std::vector<bool> m_groupVisible;
 };
 

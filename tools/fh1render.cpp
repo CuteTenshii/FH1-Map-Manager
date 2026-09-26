@@ -3,6 +3,7 @@
 // the renderer on machines (or platforms) where the interactive view cannot
 // open.
 
+#include "EntityRenderer.h"
 #include "ForzaZip.h"
 #include "GameInstall.h"
 #include "MapLoader.h"
@@ -19,10 +20,12 @@
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
+#include <QPainter>
 #include <QStandardPaths>
 #include <QtConcurrent/QtConcurrentMap>
 
 #include <cstdio>
+#include <memory>
 #include <numbers>
 
 namespace {
@@ -58,7 +61,11 @@ int main(int argc, char** argv)
         QStringLiteral("metres"), QStringLiteral("9000"));
     const QCommandLineOption untexturedOption(
         QStringLiteral("untextured"), QStringLiteral("Colour everything from the satellite map instead."));
-    parser.addOptions({trackOption, cameraOption, sizeOption, distanceOption, untexturedOption});
+    const QCommandLineOption layersOption(QStringLiteral("layers"),
+        QStringLiteral("Comma-separated map layer ids to draw over the world, with their labels (gameobjs, airoutes, "
+                       "trackroutes, collobjs, particles, nav, ppzones)."),
+        QStringLiteral("ids"));
+    parser.addOptions({trackOption, cameraOption, sizeOption, distanceOption, untexturedOption, layersOption});
     parser.process(app);
     const QStringList args = parser.positionalArguments();
     if (args.size() != 2) {
@@ -86,7 +93,8 @@ int main(int argc, char** argv)
         return fail(install.errorString());
     }
     const QString track = parser.value(trackOption);
-    const fh1::MapData map = fh1::MapLoader::load(install, track);
+    const auto mapData = std::make_shared<const fh1::MapData>(fh1::MapLoader::load(install, track));
+    const fh1::MapData& map = *mapData;
 
     const QString archivePath = install.resolve(QStringLiteral("tracks/%1/bin.zip").arg(track));
     fh1::ForzaZip archive;
@@ -182,10 +190,36 @@ int main(int argc, char** argv)
     fboFormat.setAttachment(QOpenGLFramebufferObject::Depth);
     fboFormat.setSamples(4);
     QOpenGLFramebufferObject fbo(size, fboFormat);
+    const QStringList layerIds = parser.value(layersOption).split(QLatin1Char(','), Qt::SkipEmptyParts);
+    EntityRenderer entities;
+    if (!layerIds.isEmpty()) {
+        std::vector<std::vector<bool>> visible;
+        for (const fh1::Layer& layer : map.layers) {
+            const LayerStyle style = LayerStyle::of(layer, static_cast<int>(visible.size()));
+            visible.emplace_back(static_cast<std::size_t>(style.groups.size()), layerIds.contains(layer.id));
+        }
+        if (!entities.initialize()) {
+            return fail(entities.errorString());
+        }
+        entities.setMap(mapData, visible);
+    }
+
     fbo.bind();
     const WorldRenderer::Stats stats = renderer.draw(camera, size);
+    const QMatrix4x4 worldViewProjection = renderer.worldViewProjection(camera, size);
+    if (entities.isReady()) {
+        entities.draw(
+            worldViewProjection, size, camera.position, renderer.fogDistance(), WorldRenderer::fogColour(), 1.0F);
+    }
     fbo.release();
-    const QImage image = fbo.toImage();
+    QImage image = fbo.toImage();
+    if (entities.isReady()) {
+        QPainter painter(&image);
+        EntityRenderer::paintLabels(painter,
+            entities.labels(worldViewProjection, size, camera.position, renderer.viewDistance() * 0.3F, 1.0F), QFont());
+        painter.end();
+        entities.release();
+    }
     renderer.release();
     if (!image.save(args[1], "PNG")) {
         return fail(QStringLiteral("cannot write %1").arg(args[1]));

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EntityRenderer.h"
 #include "ForzaZip.h"
 #include "MapCalibration.h"
 #include "TrackTextures.h"
@@ -50,6 +51,17 @@ public:
     /// Far limit of drawing and of the fog, in metres.
     void setViewDistance(float metres);
 
+    /// The map layers to draw in the world (see EntityRenderer), or nothing
+    /// when `map` is null. `visible[layer][group]` gives each group's
+    /// starting visibility.
+    void setEntities(std::shared_ptr<const fh1::MapData> map, const std::vector<std::vector<bool>>& visible);
+    void setEntityGroupVisible(int layer, int group, bool visible);
+    /// Emphasises one feature; -1 clears the highlight.
+    void setHighlightedEntity(int layer, int feature);
+    /// Moves the camera to look at a feature from a short distance, keeping
+    /// its heading.
+    void focusOnEntity(int layer, int feature);
+
     /// True when every tile in range is loaded at the detail its distance
     /// calls for, with its textures, and no decoding is pending.
     bool isSettled() const;
@@ -64,6 +76,10 @@ public:
 signals:
     /// Emitted when the view becomes settled (see isSettled()).
     void settled();
+    /// Emitted when a click (not a drag) lands on a shown map feature, or on
+    /// none.
+    void entityClicked(int layer, int feature);
+    void emptyClicked();
     /// Emitted when tiles or textures are loaded or freed, or the world
     /// changes.
     void loadedFilesChanged();
@@ -120,6 +136,8 @@ private:
     QSet<int> m_keys;
     bool m_looking = false;
     QPoint m_lastMouse;
+    QPoint m_pressPosition;
+    EntityRenderer m_entities;
     QTimer m_ticker;
     QElapsedTimer m_frameClock;
     bool m_wasSettled = false;

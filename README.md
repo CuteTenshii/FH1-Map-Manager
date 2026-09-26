@@ -32,7 +32,9 @@ Each layer is split into groups that can be toggled separately in the Layers pan
 
 **3D world** (View → 3D World, Ctrl+2): fly through the track's terrain, roads, rocks, rivers and distant mountains, decoded from the game's render models in `bin.zip`.
 - **Textures:** everything is drawn with the game's own textures, streamed in after the geometry. Terrain shaders blend several texture layers; only the first layer is drawn so far, so ground cover changes with hard edges. Textures that exist only as small copies in the `.bundle` packs (mostly flat colours) are drawn from those copies.
-- **Controls:** drag to look, W A S D to move, Q and E to go down and up, Shift to go faster, and the mouse wheel to change speed.
+- **Map layers in 3D:** the layers shown on the 2D map are drawn in the world at their real positions and heights: objects as the game's icons or coloured markers (with a tick for their heading up close), AI routes as lines, and zones as translucent areas, with labels nearby. Hills hide what is behind them. The Layers panel's checkboxes apply to both views.
+- **Selection:** click a marker, route or zone to select it; the Objects and Properties panels follow, and the selection stays highlighted in both views. Double-clicking an object in the Objects panel flies the camera to it.
+- **Controls:** click to select, drag to look, W A S D to move, Q and E to go down and up, Shift to go faster, and the mouse wheel to change speed.
 - **Loading:** the world streams in 500 m tiles at a level of detail chosen by distance. The first opening of a track indexes its models (a few seconds); the index is cached after that.
 - **World Debug** (View → World Debug, Ctrl+Shift+D): lists the model files in the loaded tiles (LOD, tile, triangles, textures, read errors) and the textures they use (size, format, source file, video memory, status). Select a texture to preview it at any mip level, as colour, alpha or both, and save it as a PNG. Select a model to list its textures; select a texture to list the models that use it.
 - **Clear Cache** (File menu): deletes the cached world indexes (`world/*.index` in the user cache folder). The 3D world shown at the time is rebuilt straight away.
@@ -74,6 +76,7 @@ fh1mapviewer DISC --select BF_CUDA_426BF_CLOSEDC --screenshot car.png
 ```sh
 fh1render DISC out.png --camera 1600,400,-2400,60,-12   # x,y,z, heading (0 = east, 90 = north), pitch
 fh1render DISC out.png --untextured                      # satellite colouring only
+fh1render DISC out.png --layers gameobjs,airoutes        # with map layers and their labels
 ```
 
 `fh1meshscan` parses every render model in an archive and reports LOD statistics:
@@ -143,7 +146,7 @@ With these rules, all 230,057 entries of `tracks/colorado/bin.zip` and every oth
 ## Layout
 
 - `src/core`: formats and loading (LZX, zip, XML/binary parsers, string tables, Xbox and track textures, activity configs, database, calibration). No widget code.
-- `src/app`: the viewer (map view, layer items, 3D view and renderer, World Debug panel, main window).
+- `src/app`: the viewer (map view, layer items, 3D view with its world and map-layer renderers, World Debug panel, main window).
 - `tools`: `fh1zip` (archives), `fh1render` (headless 3D render), `fh1meshscan` (model statistics).
 - `tests`: unit tests, with a small LZX encoder for building test streams, plus the optional real-disc suite.
 
