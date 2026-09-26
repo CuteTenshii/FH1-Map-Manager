@@ -4,6 +4,8 @@ A Qt 6 / C++20 desktop viewer for the world of Forza Horizon (Xbox 360), read st
 
 The repository contains no game data: the viewer reads the files of your own copy of the game.
 
+![The 2D map of Colorado: the game's satellite image with gameplay objects, route markers, collision objects and road nodes drawn over it, and the Objects panel listing barn finds](.forgejo/screenshots/app.png)
+
 It shows the game's own satellite map (`UI.zip` → `New Map/MapGameReady.jpg`) with these layers over it:
 
 | Layer                                                                       | Source                                   | Colorado count |
