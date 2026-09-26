@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FH1_BUILD_TESTS "Build the unit tests" ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Sql)
 find_package(ZLIB REQUIRED)
 
 qt_standard_project_setup()
@@ -20,13 +20,30 @@ endif()
 
 # Formats and data loading, independent of any widget code.
 add_library(fh1core STATIC
+    src/core/Activities.cpp
+    src/core/Activities.h
     src/core/ForzaZip.cpp
     src/core/ForzaZip.h
+    src/core/GameDatabase.cpp
+    src/core/GameDatabase.h
+    src/core/GameInstall.cpp
+    src/core/GameInstall.h
+    src/core/Loaders.cpp
+    src/core/Loaders.h
     src/core/Lzx.cpp
     src/core/Lzx.h
+    src/core/MapCalibration.cpp
+    src/core/MapCalibration.h
+    src/core/MapData.h
+    src/core/MapLoader.cpp
+    src/core/MapLoader.h
+    src/core/StringTable.cpp
+    src/core/StringTable.h
+    src/core/XboxTexture.cpp
+    src/core/XboxTexture.h
 )
 target_include_directories(fh1core PUBLIC src/core)
-target_link_libraries(fh1core PUBLIC Qt6::Core PRIVATE ZLIB::ZLIB)
+target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE ZLIB::ZLIB)
 
 qt_add_executable(fh1zip tools/fh1zip.cpp)
 target_link_libraries(fh1zip PRIVATE fh1core)
@@ -50,4 +67,6 @@ if(FH1_BUILD_TESTS)
 
     fh1_add_test(tst_lzx fh1core)
     fh1_add_test(tst_forzazip fh1core ZLIB::ZLIB)
+    fh1_add_test(tst_loaders fh1core)
+    fh1_add_test(tst_labels fh1core)
 endif()
