@@ -196,10 +196,15 @@ private slots:
         QCOMPARE(placements->failedZones(), 0);
         QCOMPARE(placements->drawCount(), std::size_t{62173});
         int placed = 0;
+        int eventProps = 0;
         for (std::size_t d = 0; d < placements->drawCount(); ++d) {
-            placed += placements->placement(d) != nullptr ? 1 : 0;
+            const fh1::Placement* p = placements->placement(d);
+            placed += p != nullptr ? 1 : 0;
+            eventProps += p != nullptr && p->eventProp ? 1 : 0;
         }
         QVERIFY2(placed > 59000, qPrintable(QString::number(placed)));
+        // Race and festival gear: 22,263 draws when this was written.
+        QVERIFY2(eventProps > 20000 && eventProps < 25000, qPrintable(QString::number(eventProps)));
 
         // Obj17026 of CollObjs.xml, a marker pole (render object 701).
         const fh1::Placement* pole = nullptr;
@@ -211,6 +216,8 @@ private slots:
             }
         }
         QVERIFY(pole != nullptr);
+        // Marker poles are breakable but always there.
+        QVERIFY(!pole->eventProp);
         const QVector3D xAxis = pole->apply(QVector3D(1, 0, 0)) - pole->position;
         QVERIFY((xAxis - QVector3D(0.163759F, 0, 0.9865F)).length() < 0.01F);
 

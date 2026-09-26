@@ -18,6 +18,8 @@ constexpr std::uint32_t kMaxZoneEntries = 1'000'000;
 /// 3 floats, 9 half floats and 16 zero bytes.
 constexpr qsizetype kRecordFixedBytes = 52;
 constexpr qsizetype kBlockTrailerBytes = 32;
+/// Block id of props that only an event or a script shows.
+constexpr std::uint32_t kEventBlock = 0xFFFFFFFF;
 
 void setError(QString* error, const QString& message)
 {
@@ -114,7 +116,9 @@ std::optional<std::vector<std::pair<std::uint32_t, Placement>>> TrackPlacements:
         c.skip(16);
         const std::uint8_t blocks = c.u8();
         for (std::uint8_t b = 0; b < blocks && c.ok(); ++b) {
-            c.skip(4);
+            if (c.u32() == kEventBlock) {
+                placement.eventProp = true;
+            }
             const std::uint8_t bytes = c.u8();
             c.skip(bytes + kBlockTrailerBytes);
         }

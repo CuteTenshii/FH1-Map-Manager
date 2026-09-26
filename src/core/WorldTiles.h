@@ -26,7 +26,9 @@ public:
         std::vector<float> edges;
     };
 
-    WorldTileGrid(const WorldIndex& index, float tileSize);
+    /// Leaves out event props (Placement::eventProp) unless `eventProps`, as
+    /// the game does outside events.
+    WorldTileGrid(const WorldIndex& index, float tileSize, bool eventProps = false);
 
     const std::vector<Tile>& tiles() const { return m_tiles; }
 

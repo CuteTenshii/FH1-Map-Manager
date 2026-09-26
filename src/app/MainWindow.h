@@ -194,6 +194,7 @@ private:
     QAction* m_fitAction = nullptr;
     QAction* m_warningsAction = nullptr;
     QAction* m_labelsAction = nullptr;
+    QAction* m_eventPropsAction = nullptr;
     QAction* m_findAction = nullptr;
     QAction* m_clearSelectionAction = nullptr;
     QAction* m_clearCacheAction = nullptr;

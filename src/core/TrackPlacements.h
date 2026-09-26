@@ -27,6 +27,13 @@ struct Placement {
     /// distances at which the game switches to the next level of detail and
     /// stops drawing the model. Negative when unused. Inferred from the data.
     std::array<float, 3> ranges{};
+    /// True if the game draws the prop only while an event or a script
+    /// switches it on: race barriers, chevrons and banners, festival set
+    /// dressing, the open and closed states of barn-find barns. Such records
+    /// carry a block whose u32 is 0xFFFFFFFF; breakable props (road signs,
+    /// cones, bins) carry blocks with other values and are always there.
+    /// Inferred from which models carry which blocks.
+    bool eventProp = false;
 
     /// Maps a point of the parsed model (whose Z the parser already negated)
     /// to world coordinates.
@@ -42,8 +49,9 @@ struct Placement {
 ///     values, bytes, 16-byte entries, n bytes     (not needed here)
 ///     n transform records, one per draw above, in the same order:
 ///         3 half floats (ranges), 3 f32 position, 9 half floats (rows),
-///         16 zero bytes, u8 c, then c blocks of u32, u8 m, m bytes and
-///         32 bytes (not needed here)
+///         16 zero bytes, u8 c, then c blocks of u32 a, u8 m, m bytes
+///         and 32 bytes; a is 0xFFFFFFFF for event props (see
+///         Placement::eventProp), the rest is not needed here
 ///
 /// Zones overlap, so a draw appears in several; its transform is the same in
 /// each. Each level of detail of a prop is a draw record of its own, with

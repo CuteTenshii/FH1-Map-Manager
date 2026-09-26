@@ -308,6 +308,8 @@ struct TestPlacement {
     QVector3D position;
     std::array<float, 9> rows{1, 0, 0, 0, 1, 0, 0, 0, 1};
     std::array<float, 3> ranges{-1, -1, -1};
+    /// The id of the record's extra block; 0xFFFFFFFF marks an event prop.
+    quint32 blockId = 0xA8;
 };
 
 /// A zone file in the layout TrackPlacements documents, with a few entries
@@ -350,7 +352,7 @@ QByteArray zoneFile(const QList<TestPlacement>& placements)
         }
         d.append(QByteArray(16, '\0'));
         d.append('\x01'); // one extra block
-        be32(d, 0xA8);
+        be32(d, p.blockId);
         d.append('\x02');
         d.append("xy", 2);
         d.append(QByteArray(32, '\x77'));
@@ -657,7 +659,7 @@ private slots:
     {
         const TestPlacement first{
             3, QVector3D(-1670.5F, 12.5F, -1207.75F), {0.5F, 0, 1, 0, 1, 0, 1, 0, -0.5F}, {150, 300, 500}};
-        const TestPlacement second{7, QVector3D(10, 20, 30)};
+        const TestPlacement second{7, QVector3D(10, 20, 30), {1, 0, 0, 0, 1, 0, 0, 0, 1}, {-1, -1, -1}, 0xFFFFFFFF};
         QString error;
         const auto placements = fh1::TrackPlacements::readZone(zoneFile({first, second}), &error);
         QVERIFY2(placements.has_value(), qPrintable(error));
@@ -669,6 +671,8 @@ private slots:
         QCOMPARE(p.rows, first.rows);
         QCOMPARE(p.ranges, first.ranges);
         QCOMPARE((*placements)[1].second.ranges, (std::array<float, 3>{-1, -1, -1}));
+        QVERIFY(!p.eventProp);
+        QVERIFY((*placements)[1].second.eventProp);
 
         QByteArray truncated = zoneFile({first, second});
         truncated.chop(10);
@@ -715,12 +719,13 @@ private slots:
         const TestTail effectTail{{{0, {-1}}}, {QStringLiteral("shaders\\track\\light_pollution.fx")}};
         const QByteArray glow = renderModel({quad(QStringLiteral("Plane001"), 700, 700, 50, 20)}, effectTail);
         // Draws: 0 = sign LOD00 (in no zone), 1 = sign LOD01, 2 = sign LOD00
-        // of a second sign, 3 = sign LOD01 of it.
+        // of a second sign, 3 = sign LOD01 of it. The second sign is only
+        // put out for events.
         const QList<quint16> draws{1, 2, 1, 2};
         const std::array<float, 9> quarterTurn{0, 0, -1, 0, 1, 0, -1, 0, 0};
         const TestPlacement a{1, QVector3D(500, 10, 500), quarterTurn, {50, 200, -1}};
-        const TestPlacement b{2, QVector3D(520, 12, 510), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {50, 200, -1}};
-        const TestPlacement c{3, b.position, b.rows, b.ranges};
+        const TestPlacement b{2, QVector3D(520, 12, 510), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {50, 200, -1}, 0xFFFFFFFF};
+        const TestPlacement c{3, b.position, b.rows, b.ranges, b.blockId};
         const QString archivePath = writeZip(dir,
             {{QStringLiteral("coloradoout.00000.rmb.bin"), ground},
                 {QStringLiteral("coloradoout.00001.rmb.bin"), signNear},
@@ -765,6 +770,8 @@ private slots:
         QCOMPARE(signs[0]->bandEnd, 50.0F);
         QCOMPARE(signs[1]->bandStart, 50.0F);
         QCOMPARE(signs[1]->bandEnd, 200.0F);
+        QVERIFY(!signs[0]->placement.eventProp && !signs[1]->placement.eventProp);
+        QVERIFY(signs[2]->placement.eventProp && signs[3]->placement.eventProp);
         // A 2 m sign, turned a quarter, around its position.
         QVERIFY(signs[0]->boundsMin.x() >= 498.9F && signs[0]->boundsMax.x() <= 501.1F);
         QVERIFY(signs[0]->boundsMin.z() >= 498.9F && signs[0]->boundsMax.z() <= 501.1F);
@@ -778,7 +785,20 @@ private slots:
             QCOMPARE(reloaded->chunks()[i].placement.position, index->chunks()[i].placement.position);
             QCOMPARE(reloaded->chunks()[i].placement.rows, index->chunks()[i].placement.rows);
             QCOMPARE(reloaded->chunks()[i].bandEnd, index->chunks()[i].bandEnd);
+            QCOMPARE(reloaded->chunks()[i].placement.eventProp, index->chunks()[i].placement.eventProp);
         }
+
+        // The tile grid leaves the event sign out unless asked for it.
+        const auto gridChunks = [&index](bool eventProps) {
+            const fh1::WorldTileGrid grid(*index, 500.0F, eventProps);
+            std::size_t count = 0;
+            for (const auto& tile : grid.tiles()) {
+                count += tile.chunks.size();
+            }
+            return count;
+        };
+        QCOMPARE(gridChunks(false), std::size_t{4});
+        QCOMPARE(gridChunks(true), std::size_t{6});
 
         // Tile building places the sign's vertices.
         const auto signIndex = static_cast<std::uint32_t>(signs[0] - index->chunks().data());

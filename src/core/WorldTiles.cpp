@@ -11,7 +11,7 @@
 
 namespace fh1 {
 
-WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize)
+WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, bool eventProps)
     : m_index(index)
 {
     const QRectF footprint = index.footprint();
@@ -19,6 +19,9 @@ WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize)
     std::map<std::pair<int, int>, std::size_t> tileByCell;
     for (std::uint32_t i = 0; i < chunks.size(); ++i) {
         const WorldChunk& chunk = chunks[i];
+        if (chunk.placed && chunk.placement.eventProp && !eventProps) {
+            continue;
+        }
         const QVector3D centre = (chunk.boundsMin + chunk.boundsMax) / 2.0F;
         const int cx = static_cast<int>(std::floor((centre.x() - footprint.left()) / tileSize));
         const int cz = static_cast<int>(std::floor((centre.z() - footprint.top()) / tileSize));

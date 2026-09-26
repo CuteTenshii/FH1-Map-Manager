@@ -68,7 +68,7 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
     m_archive = std::move(archive);
     m_index = std::move(index);
     m_textures = std::move(textures);
-    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize);
+    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize, m_eventProps);
     m_inFlight.assign(m_grid->tiles().size(), -1);
     if (m_renderer.isReady()) {
         makeCurrent();
@@ -81,6 +81,19 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
     requestTiles();
     m_ticker.start();
     update();
+}
+
+void WorldView3D::setEventPropsVisible(bool visible)
+{
+    if (visible == m_eventProps) {
+        return;
+    }
+    m_eventProps = visible;
+    // The tile grid decides which chunks exist, so the world is reloaded
+    // with a new one; the camera stays where it is.
+    if (hasWorld()) {
+        setWorld(m_archive, m_index, m_textures);
+    }
 }
 
 void WorldView3D::clearWorld()

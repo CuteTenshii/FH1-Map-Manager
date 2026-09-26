@@ -21,7 +21,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 7;
+constexpr quint32 kCacheVersion = 8;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -317,7 +317,7 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
     for (const WorldChunk& c : m_chunks) {
         out << c.entry << c.boundsMin << c.boundsMax << static_cast<qint8>(c.lod) << c.group << c.backdrop << c.placed;
         if (c.placed) {
-            out << c.placement.position;
+            out << c.placement.position << c.placement.eventProp;
             for (const float value : c.placement.rows) {
                 out << value;
             }
@@ -376,7 +376,7 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
         in >> c.entry >> c.boundsMin >> c.boundsMax >> lod >> c.group >> c.backdrop >> c.placed;
         c.lod = lod;
         if (c.placed) {
-            in >> c.placement.position;
+            in >> c.placement.position >> c.placement.eventProp;
             for (float& value : c.placement.rows) {
                 in >> value;
             }

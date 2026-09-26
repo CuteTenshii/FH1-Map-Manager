@@ -222,6 +222,16 @@ void MainWindow::createActions()
         m_view->setLabelsVisible(checked);
         QSettings().setValue(QStringLiteral("view/showLabels"), checked);
     });
+    m_eventPropsAction = m_viewMenu->addAction(tr("Show &Event Props"));
+    m_eventPropsAction->setCheckable(true);
+    m_eventPropsAction->setToolTip(
+        tr("Show the barriers, chevrons, banners and other props the game only puts out for races and events"));
+    m_eventPropsAction->setChecked(QSettings().value(QStringLiteral("view/showEventProps"), false).toBool());
+    m_world3D->setEventPropsVisible(m_eventPropsAction->isChecked());
+    connect(m_eventPropsAction, &QAction::toggled, this, [this](bool checked) {
+        m_world3D->setEventPropsVisible(checked);
+        QSettings().setValue(QStringLiteral("view/showEventProps"), checked);
+    });
     m_viewMenu->addSeparator();
     auto* viewModes = new QActionGroup(this);
     m_view2DAction = m_viewMenu->addAction(tr("&2D Map"));

@@ -43,6 +43,10 @@ public:
     /// keeping its heading and pitch.
     void lookFromAbove(float x, float z, float height);
 
+    /// Whether to draw event props (see fh1::Placement::eventProp), which the
+    /// game only shows during races and other events. Off by default.
+    void setEventPropsVisible(bool visible);
+
     /// Far limit of drawing and of the fog, in metres.
     void setViewDistance(float metres);
 
@@ -125,6 +129,7 @@ private:
     quint64 m_epoch = 0;
     QThreadPool m_pool;
     int m_failedChunks = 0;
+    bool m_eventProps = false;
 
     Camera m_camera;
     float m_speed = 60.0F;

@@ -65,7 +65,10 @@ int main(int argc, char** argv)
         QStringLiteral("Comma-separated map layer ids to draw over the world, with their labels (gameobjs, airoutes, "
                        "trackroutes, collobjs, particles, nav, ppzones)."),
         QStringLiteral("ids"));
-    parser.addOptions({trackOption, cameraOption, sizeOption, distanceOption, untexturedOption, layersOption});
+    const QCommandLineOption eventPropsOption(QStringLiteral("event-props"),
+        QStringLiteral("Also draw the props the game only shows during races and events."));
+    parser.addOptions(
+        {trackOption, cameraOption, sizeOption, distanceOption, untexturedOption, layersOption, eventPropsOption});
     parser.process(app);
     const QStringList args = parser.positionalArguments();
     if (args.size() != 2) {
@@ -133,7 +136,7 @@ int main(int argc, char** argv)
         }
         index->save(cachePath, signature);
     }
-    const fh1::WorldTileGrid grid(*index, 500.0F);
+    const fh1::WorldTileGrid grid(*index, 500.0F, parser.isSet(eventPropsOption));
 
     std::optional<fh1::TrackTextures> textures;
     if (!parser.isSet(untexturedOption)) {
