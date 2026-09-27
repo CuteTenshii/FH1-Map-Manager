@@ -101,18 +101,32 @@ void MapView::fitScene()
 
 void MapView::focusOn(const QRectF& rect, double maxZoom)
 {
+    centreAt(rect, std::max(zoomToFit(rect, maxZoom), zoom()));
+}
+
+void MapView::fitRect(const QRectF& rect, double maxZoom)
+{
+    centreAt(rect, zoomToFit(rect, maxZoom));
+}
+
+double MapView::zoomToFit(const QRectF& rect, double maxZoom) const
+{
     const QSize view = viewport()->size();
     double target = maxZoom;
     if (rect.width() > 0.0 && rect.height() > 0.0) {
         // Leave a margin around lines and zones so their ends stay visible.
         target = std::min(target, 0.8 * std::min(view.width() / rect.width(), view.height() / rect.height()));
     }
-    target = std::max(target, zoom());
-    target = std::clamp(target, minimumZoom(), kMaxZoom);
+    return target;
+}
+
+void MapView::centreAt(const QRectF& rect, double zoom)
+{
+    const double target = std::clamp(zoom, minimumZoom(), kMaxZoom);
     setTransform(QTransform::fromScale(target, target));
     centerOn(rect.center());
     m_fitted = false;
-    emit zoomChanged(zoom());
+    emit zoomChanged(this->zoom());
 }
 
 void MapView::setLabelSources(std::vector<const LayerItem*> sources)

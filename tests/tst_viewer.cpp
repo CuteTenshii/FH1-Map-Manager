@@ -2,20 +2,26 @@
 #include "LayerItem.h"
 #include "MainWindow.h"
 #include "MapView.h"
+#include "RaceTableModel.h"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QFile>
 #include <QGraphicsScene>
 #include <QMessageBox>
+#include <QSettings>
 #include <QSignalSpy>
+#include <QSortFilterProxyModel>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTest>
 #include <QTimer>
 
 #include <functional>
+#include <map>
 
 namespace {
 
@@ -104,6 +110,49 @@ private slots:
         answerNextMessageBox(QStringLiteral("OK"));
         clearCache->trigger();
         QVERIFY(QFile::remove(QDir(directory).filePath(QStringLiteral("notes.txt"))));
+    }
+
+    void eventPropsChoiceStaysInStep()
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("view/eventProps"));
+        // The on/off switch this choice replaced becomes "All events".
+        settings.setValue(QStringLiteral("view/showEventProps"), true);
+
+        MainWindow window;
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        QComboBox* combo = nullptr;
+        for (QComboBox* candidate : window.findChildren<QComboBox*>()) {
+            if (candidate->findText(QStringLiteral("All events")) >= 0) {
+                combo = candidate;
+            }
+        }
+        QVERIFY(combo != nullptr);
+        QVERIFY(actions.count(QStringLiteral("All Events")) == 1);
+        QVERIFY(actions[QStringLiteral("All Events")]->isChecked());
+        QCOMPARE(combo->currentText(), QStringLiteral("All events"));
+        QCOMPARE(settings.value(QStringLiteral("view/eventProps")).toString(), QStringLiteral("all"));
+        QVERIFY(!settings.contains(QStringLiteral("view/showEventProps")));
+
+        // Without a race, the race choice says so and cannot be picked.
+        QAction* selectedRace = actions[QStringLiteral("Selected Race (none selected)")];
+        QVERIFY(selectedRace != nullptr);
+        QVERIFY(!selectedRace->isEnabled());
+        QCOMPARE(combo->itemText(1), QStringLiteral("Selected race (none selected)"));
+        const auto* items = qobject_cast<const QStandardItemModel*>(combo->model());
+        QVERIFY(items != nullptr);
+        QVERIFY(!items->item(1)->isEnabled());
+
+        // The menu and the Events panel follow each other.
+        actions[QStringLiteral("None")]->trigger();
+        QCOMPARE(combo->currentText(), QStringLiteral("None"));
+        combo->activated(1);
+        QVERIFY(selectedRace->isChecked());
+        QCOMPARE(settings.value(QStringLiteral("view/eventProps")).toString(), QStringLiteral("race"));
+        settings.remove(QStringLiteral("view/eventProps"));
     }
 
     void pointBoundsCoverEveryPoint()
@@ -211,6 +260,60 @@ private slots:
         QCOMPARE(model.rowOf(0, 1), 2);
         QCOMPARE(model.rowOf(1, 0), 0);
         QCOMPARE(model.locationAt(3).layer, -1);
+
+        model.setMap(nullptr);
+        QCOMPARE(model.rowCount(), 0);
+    }
+
+    void layerColoursOverridePalette()
+    {
+        fh1::Layer layer;
+        layer.features = {point("1", "start", 0, 0), point("2", "other", 0, 0)};
+        layer.groupColours = {{QStringLiteral("start"), QColor(1, 2, 3)}};
+        PointLayerItem item(layer, kIdentity, 0, 3.0);
+        QCOMPARE(item.groupColor(item.groupIndex(QStringLiteral("start"))), QColor(1, 2, 3));
+        QVERIFY(item.groupColor(item.groupIndex(QStringLiteral("other"))) != QColor(1, 2, 3));
+    }
+
+    void raceTableSortsByValue()
+    {
+        fh1::MapData map;
+        fh1::Race blitz;
+        blitz.eventId = QStringLiteral("FR05");
+        blitz.name = QStringLiteral("Oakley Blitz");
+        blitz.length = 1785;
+        blitz.prize = 3000;
+        blitz.route = 0;
+        fh1::Race run = blitz;
+        run.eventId = QStringLiteral("STREET_PLNS_011");
+        run.name = QStringLiteral("Goliath");
+        run.length = 60123;
+        run.prize = 100000;
+        run.route = -1;
+        run.routeId = 12;
+        map.races = {run, blitz};
+
+        RaceTableModel model;
+        model.setMap(&map);
+        QCOMPARE(model.rowCount(), 2);
+        QCOMPARE(model.data(model.index(0, RaceTableModel::EventId), Qt::DisplayRole).toString(),
+            QStringLiteral("STREET_PLNS_011"));
+        QCOMPARE(model.data(model.index(1, RaceTableModel::Prize), Qt::EditRole).toInt(), 3000);
+        QCOMPARE(model.data(model.index(0, RaceTableModel::Length), Qt::EditRole).toInt(), 60123);
+        QVERIFY(model.data(model.index(0, RaceTableModel::Length), Qt::DisplayRole)
+                .toString()
+                .endsWith(QLatin1String(" km")));
+        // A race without a route file says why it cannot be shown.
+        QVERIFY(
+            model.data(model.index(0, RaceTableModel::Name), Qt::ToolTipRole).toString().contains(QLatin1String("12")));
+        QVERIFY(!model.data(model.index(1, RaceTableModel::Name), Qt::ToolTipRole).isValid());
+
+        // Sorting uses the raw numbers, not the formatted text.
+        QSortFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+        proxy.setSortRole(Qt::EditRole);
+        proxy.sort(RaceTableModel::Prize);
+        QCOMPARE(proxy.data(proxy.index(0, RaceTableModel::Name)).toString(), QStringLiteral("Oakley Blitz"));
 
         model.setMap(nullptr);
         QCOMPARE(model.rowCount(), 0);

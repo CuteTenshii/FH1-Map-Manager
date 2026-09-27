@@ -133,6 +133,10 @@ class ShapeLayerItem : public LayerItem {
 public:
     ShapeLayerItem(const fh1::Layer& layer, const fh1::MapCalibration& calibration, int layerIndex);
 
+    /// Multiplies the width lines are drawn with, so a layer can stand out
+    /// from the others.
+    void setLineWidthScale(double scale);
+
     QRectF boundingRect() const override;
     void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) override;
     std::optional<Hit> hitTest(const QPointF& scenePos, double tolerance) const override;
@@ -145,4 +149,5 @@ private:
     std::vector<QPainterPath> m_paths;
     std::vector<std::vector<std::vector<QPointF>>> m_sceneShapes;
     QRectF m_bounds;
+    double m_lineWidthScale = 1.0;
 };

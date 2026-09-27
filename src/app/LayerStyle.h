@@ -16,6 +16,8 @@ struct LayerStyle {
     /// Index into `groups` for each feature of the layer.
     std::vector<int> featureGroup;
     std::vector<int> groupSizes;
+    /// The layer's own colour for a group (fh1::Layer::groupColours), or
+    /// one from a palette.
     std::vector<QColor> groupColors;
 
     static LayerStyle of(const fh1::Layer& layer, int layerIndex);

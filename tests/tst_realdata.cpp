@@ -256,6 +256,23 @@ private slots:
         QVERIFY2(placed > 59000, qPrintable(QString::number(placed)));
         // Race and festival gear: 22,263 draws when this was written.
         QVERIFY2(eventProps > 20000 && eventProps < 25000, qPrintable(QString::number(eventProps)));
+        // Some of it names its event: 37 draws belong to Ferrari Massimo
+        // (FR04).
+        int ferrariMassimo = 0;
+        for (std::size_t d = 0; d < placements->drawCount(); ++d) {
+            const fh1::Placement* p = placements->placement(d);
+            ferrariMassimo += p != nullptr && p->eventProp && p->belongsToEvent(QStringLiteral("FR04")) ? 1 : 0;
+        }
+        QCOMPARE(ferrariMassimo, 37);
+        // Most race gear names no event but lists the routes it is put out
+        // for: with its named gear, 517 draws for Bondurant Valley Skirmish
+        // (FR10, route 151).
+        int valleySkirmish = 0;
+        for (std::size_t d = 0; d < placements->drawCount(); ++d) {
+            const fh1::Placement* p = placements->placement(d);
+            valleySkirmish += p != nullptr && p->eventProp && p->belongsToRace(QStringLiteral("FR10"), 151) ? 1 : 0;
+        }
+        QCOMPARE(valleySkirmish, 517);
 
         // Obj17026 of CollObjs.xml, a marker pole (render object 701).
         const fh1::Placement* pole = nullptr;

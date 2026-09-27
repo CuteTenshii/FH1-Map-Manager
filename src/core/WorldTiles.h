@@ -13,6 +13,25 @@
 
 namespace fh1 {
 
+/// Which event props (Placement::eventProp) a WorldTileGrid includes; other
+/// chunks are always included.
+class EventPropFilter {
+public:
+    /// None, as the game shows the world outside events.
+    EventPropFilter() = default;
+    static EventPropFilter all();
+    /// Only the props that belong to one race (Placement::belongsToRace).
+    static EventPropFilter race(const QString& eventId, int routeId);
+
+    bool includes(const WorldChunk& chunk) const;
+    bool operator==(const EventPropFilter&) const = default;
+
+private:
+    bool m_all = false;
+    QString m_eventId;
+    int m_routeId = -1;
+};
+
 /// The world's chunks bucketed into square tiles, so the 3D view can merge a
 /// tile's chunks into one draw and re-merge only when the camera crosses one
 /// of the tile's LOD band edges.
@@ -28,9 +47,8 @@ public:
         std::vector<float> edges;
     };
 
-    /// Leaves out event props (Placement::eventProp) unless `eventProps`, as
-    /// the game does outside events.
-    WorldTileGrid(const WorldIndex& index, float tileSize, bool eventProps = false);
+    /// Leaves out the event props that `eventProps` does not include.
+    WorldTileGrid(const WorldIndex& index, float tileSize, const EventPropFilter& eventProps = {});
 
     const std::vector<Tile>& tiles() const { return m_tiles; }
 

@@ -363,6 +363,14 @@ QRectF ShapeLayerItem::boundingRect() const
     return m_bounds.adjusted(-kPenMargin, -kPenMargin, kPenMargin, kPenMargin);
 }
 
+void ShapeLayerItem::setLineWidthScale(double scale)
+{
+    if (m_lineWidthScale != scale) {
+        m_lineWidthScale = scale;
+        update();
+    }
+}
+
 void ShapeLayerItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget)
 {
     Q_UNUSED(widget);
@@ -382,12 +390,13 @@ void ShapeLayerItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* op
             return;
         }
         painter->setBrush(Qt::NoBrush);
-        QPen halo(QColor(0, 0, 0, 170), highlighted ? 7.0 : 4.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        QPen halo(QColor(0, 0, 0, 170), (highlighted ? 7.0 : 4.5) * m_lineWidthScale, Qt::SolidLine, Qt::RoundCap,
+            Qt::RoundJoin);
         halo.setCosmetic(true);
         painter->setPen(halo);
         painter->drawPath(m_paths[i]);
-        QPen pen(highlighted ? QColor(Qt::white) : color, highlighted ? 4.0 : 2.5, Qt::SolidLine, Qt::RoundCap,
-            Qt::RoundJoin);
+        QPen pen(highlighted ? QColor(Qt::white) : color, (highlighted ? 4.0 : 2.5) * m_lineWidthScale, Qt::SolidLine,
+            Qt::RoundCap, Qt::RoundJoin);
         pen.setCosmetic(true);
         painter->setPen(pen);
         painter->drawPath(m_paths[i]);

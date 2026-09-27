@@ -77,6 +77,20 @@ QVector3D Placement::apply(const QVector3D& parsed) const
         x * rows[1] + y * rows[4] + z * rows[7] + position.y(), x * rows[2] + y * rows[5] + z * rows[8] + position.z()};
 }
 
+bool Placement::belongsToEvent(const QString& eventId) const
+{
+    if (eventId.isEmpty() || !eventTag.startsWith(eventId, Qt::CaseInsensitive)) {
+        return false;
+    }
+    // "FR01" must not claim "FR010"'s props, only its own suffixed parts.
+    return eventTag.size() == eventId.size() || eventTag.at(eventId.size()) == QLatin1Char('_');
+}
+
+bool Placement::belongsToRace(const QString& eventId, int routeId) const
+{
+    return belongsToEvent(eventId) || std::find(eventRoutes.begin(), eventRoutes.end(), routeId) != eventRoutes.end();
+}
+
 std::optional<std::vector<std::pair<std::uint32_t, Placement>>> TrackPlacements::readZone(
     const QByteArray& zone, QString* error)
 {
@@ -125,11 +139,22 @@ std::optional<std::vector<std::pair<std::uint32_t, Placement>>> TrackPlacements:
         c.skip(16);
         const std::uint8_t blocks = c.u8();
         for (std::uint8_t b = 0; b < blocks && c.ok(); ++b) {
-            if (c.u32() == kEventBlock) {
-                placement.eventProp = true;
-            }
+            const bool eventBlock = c.u32() == kEventBlock;
             const std::uint8_t bytes = c.u8();
-            c.skip(bytes + kBlockTrailerBytes);
+            if (eventBlock && c.has(bytes)) {
+                const auto* first = reinterpret_cast<const std::uint8_t*>(zone.constData() + c.pos());
+                placement.eventRoutes.insert(placement.eventRoutes.end(), first, first + bytes);
+            }
+            c.skip(bytes);
+            if (eventBlock) {
+                placement.eventProp = true;
+                if (placement.eventTag.isEmpty() && c.has(kBlockTrailerBytes)) {
+                    const QByteArray name = zone.mid(c.pos(), kBlockTrailerBytes);
+                    const std::size_t length = qstrnlen(name.constData(), static_cast<std::size_t>(name.size()));
+                    placement.eventTag = QString::fromLatin1(name.constData(), static_cast<qsizetype>(length));
+                }
+            }
+            c.skip(kBlockTrailerBytes);
         }
         placements.emplace_back(draws[k], placement);
     }

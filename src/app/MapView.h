@@ -23,6 +23,9 @@ public:
     void fitScene();
     /// Centres on `rect`, zooming in no further than `maxZoom`.
     void focusOn(const QRectF& rect, double maxZoom);
+    /// Centres on `rect` and zooms in or out to fit it, zooming in no
+    /// further than `maxZoom`.
+    void fitRect(const QRectF& rect, double maxZoom);
 
     /// Layers whose labels are drawn over the map, top-most first; earlier
     /// layers win when labels would overlap. The items must outlive their use
@@ -50,6 +53,9 @@ protected:
 
 private:
     double minimumZoom() const;
+    /// Zoom that fits `rect` with a margin, or `maxZoom` if that is closer.
+    double zoomToFit(const QRectF& rect, double maxZoom) const;
+    void centreAt(const QRectF& rect, double zoom);
     void drawScaleBar(QPainter* painter);
     void drawLabels(QPainter* painter);
 

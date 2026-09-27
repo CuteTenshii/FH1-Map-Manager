@@ -24,7 +24,9 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 12;
+constexpr quint32 kCacheVersion = 14;
+/// A zone record has at most 255 blocks of at most 255 route bytes.
+constexpr quint32 kMaxEventRoutes = 255 * 255;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// How far a transform may be from the world-space one (no move, Z mirrored)
@@ -436,7 +438,11 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
             out << zone;
         }
         if (c.placed) {
-            out << c.placement.position << c.placement.eventProp << c.scattered;
+            out << c.placement.position << c.placement.eventProp << c.placement.eventTag << c.scattered;
+            out << static_cast<quint32>(c.placement.eventRoutes.size());
+            for (const std::uint8_t route : c.placement.eventRoutes) {
+                out << route;
+            }
             for (const float value : c.placement.rows) {
                 out << value;
             }
@@ -511,7 +517,16 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
             in >> zone;
         }
         if (c.placed) {
-            in >> c.placement.position >> c.placement.eventProp >> c.scattered;
+            in >> c.placement.position >> c.placement.eventProp >> c.placement.eventTag >> c.scattered;
+            quint32 routeCount = 0;
+            in >> routeCount;
+            if (in.status() != QDataStream::Ok || routeCount > kMaxEventRoutes) {
+                return fail(QStringLiteral("cache file is corrupt"));
+            }
+            c.placement.eventRoutes.resize(routeCount);
+            for (std::uint8_t& route : c.placement.eventRoutes) {
+                in >> route;
+            }
             for (float& value : c.placement.rows) {
                 in >> value;
             }

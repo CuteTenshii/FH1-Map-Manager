@@ -22,6 +22,7 @@ class BackgroundItem;
 class FeatureTableModel;
 class LayerItem;
 class MapView;
+class RaceTableModel;
 class WorldDebugPanel;
 class WorldView3D;
 class QAction;
@@ -56,6 +57,8 @@ public:
         double zoom = 1.0;
         /// Name of a feature to select once the map is loaded.
         QString select;
+        /// Event ID of a race to show once the map is loaded.
+        QString race;
         /// Show the 3D world instead of the 2D map; the screenshot is taken
         /// once every visible tile has loaded.
         bool world3D = false;
@@ -90,6 +93,9 @@ private:
         int layer = -1;
         int feature = -1;
     };
+    /// Which of the props the game only puts out for events the 3D world
+    /// draws.
+    enum class EventProps { None, SelectedRace, AllEvents };
 
     void createActions();
     void createDocks();
@@ -116,6 +122,32 @@ private:
     void onTableSelectionChanged();
     void onTableActivated(const QModelIndex& index);
     void applyFilter();
+    void createEventsDock();
+    /// Shows race `race` (an index into MapData::races): its route on the map
+    /// and in the 3D world, only its event props, and its details in the
+    /// Properties panel. With `focus`, both views move to it.
+    void selectRace(int race, bool focus);
+    /// Stops showing the selected race.
+    void clearRace();
+    /// Takes the selected race's route off the map and out of the 3D world.
+    void removeRaceOverlay();
+    /// The pole position of the selected race, or nullptr.
+    const fh1::RouteTransform* raceStart() const;
+    void showRaceProperties();
+    void onRaceSelectionChanged();
+    void applyRaceFilter();
+    /// Moves the 2D map and the 3D camera to the selected race.
+    void focusOnRace();
+    /// Points the map's labels at the race overlay and the layers.
+    void updateLabelSources();
+    /// Switches the event props shown, updating the menu and the Events
+    /// panel and remembering the choice.
+    void setEventProps(EventProps mode);
+    /// Hands the 3D view the event props for the mode and selected race.
+    void applyEventPropFilter();
+    /// Names the selected race in the Events panel and the Selected Race
+    /// choices, and disables those while no race is selected.
+    void updateEventPropsChoices();
     void exportView();
     void showWarnings();
     void showAbout();
@@ -189,6 +221,23 @@ private:
     QTableWidget* m_properties = nullptr;
     bool m_syncingSelection = false;
 
+    QDockWidget* m_eventsDock = nullptr;
+    QLineEdit* m_raceFilterEdit = nullptr;
+    QTableView* m_raceTable = nullptr;
+    QLabel* m_raceCount = nullptr;
+    QToolButton* m_hideRaceButton = nullptr;
+    QLabel* m_selectedRaceLabel = nullptr;
+    /// Event props choice in the Events panel, in EventProps order.
+    QComboBox* m_eventPropsCombo = nullptr;
+    RaceTableModel* m_raceModel = nullptr;
+    QSortFilterProxyModel* m_raceProxy = nullptr;
+    /// Index into MapData::races of the race shown, or -1.
+    int m_selectedRace = -1;
+    /// The layers drawn for the selected race; the items below and the 3D
+    /// view refer to them.
+    std::shared_ptr<const fh1::MapData> m_raceOverlay;
+    std::vector<LayerItem*> m_raceItems;
+
     QComboBox* m_trackCombo = nullptr;
     QLabel* m_cursorLabel = nullptr;
     QProgressBar* m_busy = nullptr;
@@ -201,7 +250,9 @@ private:
     QAction* m_fitAction = nullptr;
     QAction* m_warningsAction = nullptr;
     QAction* m_labelsAction = nullptr;
-    QAction* m_eventPropsAction = nullptr;
+    EventProps m_eventProps = EventProps::SelectedRace;
+    /// View → Event Props entries, in EventProps order.
+    std::array<QAction*, 3> m_eventPropsActions{};
     QAction* m_findAction = nullptr;
     QAction* m_clearSelectionAction = nullptr;
     QAction* m_clearCacheAction = nullptr;

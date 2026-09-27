@@ -108,7 +108,7 @@ void ModelPreview::setModel(std::shared_ptr<const fh1::ForzaZip> archive, std::s
     m_index = std::make_shared<const fh1::WorldIndex>(fh1::WorldIndex::fromChunks({only}));
     // One tile holds the whole model, whatever its size.
     const float extent = std::max(only.boundsMax.x() - only.boundsMin.x(), only.boundsMax.z() - only.boundsMin.z());
-    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, std::max(extent, 1.0F) * 2.0F, true);
+    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, std::max(extent, 1.0F) * 2.0F, fh1::EventPropFilter::all());
     m_gridChanged = true;
 
     m_boundsMin = only.boundsMin;

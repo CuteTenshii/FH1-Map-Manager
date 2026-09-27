@@ -53,7 +53,7 @@ LayerStyle LayerStyle::of(const fh1::Layer& layer, int layerIndex)
     for (int i = 0; i < style.groups.size(); ++i) {
         index.insert(style.groups.at(i), i);
         style.groupSizes.push_back(counts.value(style.groups.at(i)));
-        style.groupColors.push_back(groupColorFor(layerIndex, i));
+        style.groupColors.push_back(layer.groupColours.value(style.groups.at(i), groupColorFor(layerIndex, i)));
     }
     style.featureGroup.reserve(layer.features.size());
     for (const fh1::Feature& feature : layer.features) {

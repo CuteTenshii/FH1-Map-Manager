@@ -15,7 +15,30 @@
 
 namespace fh1 {
 
-WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, bool eventProps)
+EventPropFilter EventPropFilter::all()
+{
+    EventPropFilter filter;
+    filter.m_all = true;
+    return filter;
+}
+
+EventPropFilter EventPropFilter::race(const QString& eventId, int routeId)
+{
+    EventPropFilter filter;
+    filter.m_eventId = eventId;
+    filter.m_routeId = routeId;
+    return filter;
+}
+
+bool EventPropFilter::includes(const WorldChunk& chunk) const
+{
+    if (!chunk.placed || !chunk.placement.eventProp || m_all) {
+        return true;
+    }
+    return chunk.placement.belongsToRace(m_eventId, m_routeId);
+}
+
+WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, const EventPropFilter& eventProps)
     : m_index(index)
 {
     const QRectF footprint = index.footprint();
@@ -23,7 +46,7 @@ WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, bool event
     std::map<std::pair<int, int>, std::size_t> tileByCell;
     for (std::uint32_t i = 0; i < chunks.size(); ++i) {
         const WorldChunk& chunk = chunks[i];
-        if (chunk.placed && chunk.placement.eventProp && !eventProps) {
+        if (!eventProps.includes(chunk)) {
             continue;
         }
         const QVector3D centre = (chunk.boundsMin + chunk.boundsMax) / 2.0F;

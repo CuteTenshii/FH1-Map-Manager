@@ -31,6 +31,9 @@ constexpr double kPickTolerance = 8.0;
 constexpr float kLabelDistance = 2500.0F;
 constexpr float kFocusMinDistance = 40.0F;
 constexpr float kFocusPitch = -0.45F;
+/// Where lookAlong() puts the camera: this far behind and above the point.
+constexpr float kChaseDistance = 30.0F;
+constexpr float kChaseHeight = 12.0F;
 
 } // namespace
 
@@ -59,6 +62,7 @@ void WorldView3D::releaseGL()
     makeCurrent();
     m_renderer.release();
     m_entities.release();
+    m_overlay.release();
     doneCurrent();
 }
 
@@ -69,7 +73,7 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
     m_archive = std::move(archive);
     m_index = std::move(index);
     m_textures = std::move(textures);
-    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize, m_eventProps);
+    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize, m_eventPropFilter);
     m_inFlight.assign(m_grid->tiles().size(), -1);
     if (m_renderer.isReady()) {
         makeCurrent();
@@ -84,17 +88,37 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
     update();
 }
 
-void WorldView3D::setEventPropsVisible(bool visible)
+void WorldView3D::setEventPropFilter(const fh1::EventPropFilter& filter)
 {
-    if (visible == m_eventProps) {
+    if (filter == m_eventPropFilter) {
         return;
     }
-    m_eventProps = visible;
+    m_eventPropFilter = filter;
     // The tile grid decides which chunks exist, so the world is reloaded
     // with a new one; the camera stays where it is.
     if (hasWorld()) {
         setWorld(m_archive, m_index, m_textures);
     }
+}
+
+void WorldView3D::setOverlay(std::shared_ptr<const fh1::MapData> overlay)
+{
+    m_overlay.setMap(std::move(overlay));
+    update();
+}
+
+void WorldView3D::lookAlong(const QVector3D& position, const QVector3D& facing)
+{
+    const QVector3D flat = QVector3D(facing.x(), 0.0F, facing.z()).normalized();
+    if (flat.isNull()) {
+        return;
+    }
+    Camera camera = m_camera;
+    camera.position = position - flat * kChaseDistance + QVector3D(0.0F, kChaseHeight, 0.0F);
+    // Yaw 0 looks along +X and grows toward +Z.
+    camera.yaw = std::atan2(flat.z(), flat.x());
+    camera.pitch = -std::atan2(kChaseHeight, kChaseDistance);
+    setCamera(camera);
 }
 
 void WorldView3D::clearWorld()
@@ -300,6 +324,7 @@ void WorldView3D::initializeGL()
     connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, &WorldView3D::releaseGL, Qt::UniqueConnection);
     if (m_renderer.initialize()) {
         m_entities.initialize();
+        m_overlay.initialize();
     }
     // Tiles of a previous context are gone; build them again for this one.
     std::fill(m_inFlight.begin(), m_inFlight.end(), -1);
@@ -348,9 +373,11 @@ void WorldView3D::paintGL()
         }
         const QSize viewport = size() * devicePixelRatioF();
         stats = m_renderer.draw(m_camera, viewport);
-        if (m_entities.isReady()) {
-            m_entities.draw(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
-                m_renderer.fogDistance(), WorldRenderer::fogColour(), static_cast<float>(devicePixelRatioF()));
+        for (EntityRenderer* entities : {&m_entities, &m_overlay}) {
+            if (entities->isReady()) {
+                entities->draw(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
+                    m_renderer.fogDistance(), WorldRenderer::fogColour(), static_cast<float>(devicePixelRatioF()));
+            }
         }
     }
     drawOverlay(stats);
@@ -379,13 +406,20 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
 {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    if (m_renderer.isReady() && m_entities.map() != nullptr) {
+    if (m_renderer.isReady()) {
         // The painter works in logical pixels, so the labels are projected
-        // onto the logical viewport.
-        EntityRenderer::paintLabels(painter,
-            m_entities.labels(m_renderer.worldViewProjection(m_camera, size()), size(), m_camera.position,
-                std::min(kLabelDistance, m_renderer.viewDistance()), 1.0F),
-            font());
+        // onto the logical viewport. The overlay's labels go first, so they
+        // win where labels would overlap.
+        std::vector<EntityRenderer::ScreenLabel> labels;
+        for (const EntityRenderer* entities : {&m_overlay, &m_entities}) {
+            if (entities->map() != nullptr) {
+                std::vector<EntityRenderer::ScreenLabel> more
+                    = entities->labels(m_renderer.worldViewProjection(m_camera, size()), size(), m_camera.position,
+                        std::min(kLabelDistance, m_renderer.viewDistance()), 1.0F);
+                labels.insert(labels.end(), more.begin(), more.end());
+            }
+        }
+        EntityRenderer::paintLabels(painter, labels, font());
     }
     QStringList lines;
     if (!m_renderer.isReady()) {

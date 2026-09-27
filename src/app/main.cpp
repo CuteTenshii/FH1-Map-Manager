@@ -105,20 +105,24 @@ int main(int argc, char* argv[])
         QStringLiteral("2"));
     const QCommandLineOption selectOption(QStringLiteral("select"),
         QStringLiteral("Select the first object with this exact ID or name."), QStringLiteral("name"));
+    const QCommandLineOption raceOption(QStringLiteral("race"),
+        QStringLiteral("Show the race event with this ID (e.g. FR05): its route, and in 3D its props."),
+        QStringLiteral("id"));
     const QCommandLineOption viewOption(QStringLiteral("view"),
         QStringLiteral("Start in the 2d map or the 3d world view."), QStringLiteral("2d|3d"), QStringLiteral("2d"));
     const QCommandLineOption cameraOption(QStringLiteral("camera"),
         QStringLiteral("3D camera: world X,Y,Z, heading and pitch in degrees (heading 0 = east, 90 = north)."),
         QStringLiteral("x,y,z,heading,pitch"));
     parser.addOptions({trackOption, screenshotOption, sizeOption, layersOption, centreOption, zoomOption, selectOption,
-        viewOption, cameraOption});
+        raceOption, viewOption, cameraOption});
     parser.process(app);
 
     const bool scripted = parser.isSet(screenshotOption) || parser.isSet(selectOption) || parser.isSet(centreOption)
-        || parser.isSet(viewOption) || parser.isSet(cameraOption);
+        || parser.isSet(raceOption) || parser.isSet(viewOption) || parser.isSet(cameraOption);
     MainWindow::ScriptOptions script;
     script.screenshotPath = parser.value(screenshotOption);
     script.select = parser.value(selectOption);
+    script.race = parser.value(raceOption);
     const QString view = parser.value(viewOption).toLower();
     if (view != QLatin1String("2d") && view != QLatin1String("3d")) {
         std::fprintf(stderr, "--view expects 2d or 3d\n");
@@ -152,8 +156,8 @@ int main(int argc, char* argv[])
     const QStringList positional = parser.positionalArguments();
     QString folder = positional.isEmpty() ? QString() : positional.first();
     if (scripted && folder.isEmpty()) {
-        std::fprintf(
-            stderr, "--screenshot, --select and --centre need a game folder argument (with --view or --camera too)\n");
+        std::fprintf(stderr,
+            "--screenshot, --select, --race and --centre need a game folder argument (with --view or --camera too)\n");
         return 2;
     }
 

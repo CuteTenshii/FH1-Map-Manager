@@ -46,9 +46,9 @@ public:
     /// keeping its heading and pitch.
     void lookFromAbove(float x, float z, float height);
 
-    /// Whether to draw event props (see fh1::Placement::eventProp), which the
-    /// game only shows during races and other events. Off by default.
-    void setEventPropsVisible(bool visible);
+    /// Which event props (see fh1::Placement::eventProp), which the game
+    /// only shows during races and other events, to draw. None by default.
+    void setEventPropFilter(const fh1::EventPropFilter& filter);
 
     /// Far limit of drawing and of the fog, in metres.
     void setViewDistance(float metres);
@@ -63,6 +63,14 @@ public:
     /// Moves the camera to look at a feature from a short distance, keeping
     /// its heading.
     void focusOnEntity(int layer, int feature);
+
+    /// Draws the layers of `overlay` (a selected race's route) over the world
+    /// and the map layers, or nothing when it is null. Its features are not
+    /// picked.
+    void setOverlay(std::shared_ptr<const fh1::MapData> overlay);
+    /// Moves the camera behind and above `position`, looking along `facing`
+    /// and down at it: the view from behind a car on a start grid.
+    void lookAlong(const QVector3D& position, const QVector3D& facing);
 
     /// Outlines one model of the world (an index into its chunks); nothing
     /// clears the outline.
@@ -144,7 +152,7 @@ private:
     quint64 m_epoch = 0;
     QThreadPool m_pool;
     int m_failedChunks = 0;
-    bool m_eventProps = false;
+    fh1::EventPropFilter m_eventPropFilter;
     std::optional<std::uint32_t> m_highlightedModel;
 
     Camera m_camera;
@@ -154,6 +162,7 @@ private:
     QPoint m_lastMouse;
     QPoint m_pressPosition;
     EntityRenderer m_entities;
+    EntityRenderer m_overlay;
     QTimer m_ticker;
     QElapsedTimer m_frameClock;
     bool m_wasSettled = false;

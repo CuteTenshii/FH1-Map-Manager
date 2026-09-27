@@ -386,6 +386,11 @@ struct TestPlacement {
     std::array<float, 3> ranges{-1, -1, -1};
     /// The id of the record's extra block; 0xFFFFFFFF marks an event prop.
     quint32 blockId = 0xA8;
+    /// The block's name, NUL-padded to 32 bytes. The initializer keeps GCC's
+    /// missing-initializer warning quiet where test data leaves it out.
+    QByteArray blockName = {}; // NOLINT(readability-redundant-member-init)
+    /// The block's m bytes: the race routes an event prop is put out for.
+    QByteArray blockBytes = QByteArrayLiteral("xy");
 };
 
 /// A zone file in the layout TrackPlacements documents, with a few entries
@@ -429,9 +434,9 @@ QByteArray zoneFile(const QList<TestPlacement>& placements)
         d.append(QByteArray(16, '\0'));
         d.append('\x01'); // one extra block
         be32(d, p.blockId);
-        d.append('\x02');
-        d.append("xy", 2);
-        d.append(QByteArray(32, '\x77'));
+        d.append(static_cast<char>(p.blockBytes.size()));
+        d.append(p.blockBytes);
+        d.append(p.blockName.leftJustified(32, '\0', true));
     }
     return d;
 }
@@ -1087,8 +1092,9 @@ private slots:
         const QList<quint16> draws{1, 2, 1, 2};
         const std::array<float, 9> quarterTurn{0, 0, -1, 0, 1, 0, -1, 0, 0};
         const TestPlacement a{1, QVector3D(500, 10, 500), quarterTurn, {50, 200, -1}};
-        const TestPlacement b{2, QVector3D(520, 12, 510), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {50, 200, -1}, 0xFFFFFFFF};
-        const TestPlacement c{3, b.position, b.rows, b.ranges, b.blockId};
+        const TestPlacement b{2, QVector3D(520, 12, 510), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {50, 200, -1}, 0xFFFFFFFF,
+            "FR04_01", QByteArray("\x05\x97", 2)};
+        const TestPlacement c{3, b.position, b.rows, b.ranges, b.blockId, b.blockName, b.blockBytes};
         const QString archivePath = writeZip(dir,
             {{QStringLiteral("coloradoout.00000.rmb.bin"), ground},
                 {QStringLiteral("coloradoout.00001.rmb.bin"), signNear},
@@ -1135,6 +1141,18 @@ private slots:
         QCOMPARE(signs[1]->bandEnd, 200.0F);
         QVERIFY(!signs[0]->placement.eventProp && !signs[1]->placement.eventProp);
         QVERIFY(signs[2]->placement.eventProp && signs[3]->placement.eventProp);
+        QCOMPARE(signs[2]->placement.eventTag, QStringLiteral("FR04_01"));
+        QVERIFY(signs[0]->placement.eventTag.isEmpty());
+        QVERIFY(signs[2]->placement.belongsToEvent(QStringLiteral("FR04")));
+        QVERIFY(signs[2]->placement.belongsToEvent(QStringLiteral("FR04_01")));
+        QVERIFY(!signs[2]->placement.belongsToEvent(QStringLiteral("FR0")));
+        QVERIFY(!signs[2]->placement.belongsToEvent(QStringLiteral("FR05")));
+        QCOMPARE(signs[2]->placement.eventRoutes, (std::vector<std::uint8_t>{5, 151}));
+        // Only event blocks list routes.
+        QVERIFY(signs[0]->placement.eventRoutes.empty());
+        QVERIFY(signs[2]->placement.belongsToRace(QStringLiteral("FR10"), 151));
+        QVERIFY(signs[2]->placement.belongsToRace(QStringLiteral("FR04"), 12));
+        QVERIFY(!signs[2]->placement.belongsToRace(QStringLiteral("FR10"), 12));
         // A 2 m sign, turned a quarter, around its position.
         QVERIFY(signs[0]->boundsMin.x() >= 498.9F && signs[0]->boundsMax.x() <= 501.1F);
         QVERIFY(signs[0]->boundsMin.z() >= 498.9F && signs[0]->boundsMax.z() <= 501.1F);
@@ -1149,10 +1167,13 @@ private slots:
             QCOMPARE(reloaded->chunks()[i].placement.rows, index->chunks()[i].placement.rows);
             QCOMPARE(reloaded->chunks()[i].bandEnd, index->chunks()[i].bandEnd);
             QCOMPARE(reloaded->chunks()[i].placement.eventProp, index->chunks()[i].placement.eventProp);
+            QCOMPARE(reloaded->chunks()[i].placement.eventTag, index->chunks()[i].placement.eventTag);
+            QCOMPARE(reloaded->chunks()[i].placement.eventRoutes, index->chunks()[i].placement.eventRoutes);
         }
 
-        // The tile grid leaves the event sign out unless asked for it.
-        const auto gridChunks = [&index](bool eventProps) {
+        // The tile grid leaves the event sign out unless asked for it, or for
+        // a race it belongs to by name or by route.
+        const auto gridChunks = [&index](const fh1::EventPropFilter& eventProps) {
             const fh1::WorldTileGrid grid(*index, 500.0F, eventProps);
             std::size_t count = 0;
             for (const auto& tile : grid.tiles()) {
@@ -1160,8 +1181,11 @@ private slots:
             }
             return count;
         };
-        QCOMPARE(gridChunks(false), std::size_t{4});
-        QCOMPARE(gridChunks(true), std::size_t{6});
+        QCOMPARE(gridChunks({}), std::size_t{4});
+        QCOMPARE(gridChunks(fh1::EventPropFilter::all()), std::size_t{6});
+        QCOMPARE(gridChunks(fh1::EventPropFilter::race(QStringLiteral("FR04"), 12)), std::size_t{6});
+        QCOMPARE(gridChunks(fh1::EventPropFilter::race(QStringLiteral("FR10"), 151)), std::size_t{6});
+        QCOMPARE(gridChunks(fh1::EventPropFilter::race(QStringLiteral("FR10"), 12)), std::size_t{4});
 
         // Tile building places the sign's vertices.
         const auto signIndex = static_cast<std::uint32_t>(signs[0] - index->chunks().data());

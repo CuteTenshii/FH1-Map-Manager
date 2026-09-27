@@ -6,6 +6,8 @@
 #include "Loaders.h"
 #include "MapLoader.h"
 #include "MapView.h"
+#include "RaceTableModel.h"
+#include "Races.h"
 #include "RenderMesh.h"
 #include "WorldDebugPanel.h"
 #include "WorldView3D.h"
@@ -16,11 +18,13 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
 #include <QGraphicsScene>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -35,6 +39,7 @@
 #include <QSettings>
 #include <QSortFilterProxyModel>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableView>
@@ -46,6 +51,8 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <numbers>
@@ -72,6 +79,13 @@ constexpr double kPickRadius = 11.0;
 constexpr int kIconPixels = 64;
 /// Zoom (device pixels per image pixel) used when jumping to a point.
 constexpr double kFocusZoom = 3.0;
+/// Radius, in device pixels, of the start grid and checkpoint markers.
+constexpr double kRaceMarkerRadius = 5.0;
+/// The race route is drawn wider than the map's lines, to stand out from
+/// the AI routes and roads under it.
+constexpr double kRaceLineWidthScale = 2.0;
+/// Race overlay items are drawn above every map layer.
+constexpr double kRaceOverlayZ = 10000.0;
 
 /// Layers shown when a track is opened for the first time. The others hold
 /// tens of thousands of props or technical data that would bury the map.
@@ -100,6 +114,24 @@ QIcon swatch(const QColor& color)
     painter.setBrush(color);
     painter.drawEllipse(QRectF(1.5, 1.5, 11.0, 11.0));
     return QIcon(pixmap);
+}
+
+/// Settings values of MainWindow::EventProps, in its order.
+const std::array<QLatin1StringView, 3> kEventPropsSettings{
+    QLatin1StringView("none"), QLatin1StringView("race"), QLatin1StringView("all")};
+
+QString eventPropsToolTip(int mode)
+{
+    switch (mode) {
+    case 0:
+        return QCoreApplication::translate("MainWindow", "Hide the props the game only puts out for races and events");
+    case 1:
+        return QCoreApplication::translate("MainWindow",
+            "Show the barriers, chevrons and banners of the race selected in the Events panel, and no others");
+    default:
+        return QCoreApplication::translate(
+            "MainWindow", "Show the barriers, chevrons, banners and festival gear of every race and event at once");
+    }
 }
 
 QString settingsKey(const QString& track, const QString& layerId)
@@ -153,6 +185,18 @@ MainWindow::MainWindow(QWidget* parent)
     createDocks();
     createStatusBar();
 
+    QSettings eventPropsSettings;
+    const QString savedEventProps = eventPropsSettings.value(QStringLiteral("view/eventProps")).toString();
+    const auto saved = std::find(kEventPropsSettings.begin(), kEventPropsSettings.end(), savedEventProps);
+    if (saved != kEventPropsSettings.end()) {
+        setEventProps(static_cast<EventProps>(saved - kEventPropsSettings.begin()));
+    } else {
+        // Before the three-way choice there was an on/off switch.
+        setEventProps(eventPropsSettings.value(QStringLiteral("view/showEventProps"), false).toBool()
+                ? EventProps::AllEvents
+                : EventProps::SelectedRace);
+    }
+
     connect(m_view, &MapView::clicked, this, &MainWindow::onMapClicked);
     connect(m_view, &MapView::cursorMoved, this, &MainWindow::onCursorMoved);
     connect(m_view, &MapView::cursorLeft, this, [this] { m_cursorLabel->clear(); });
@@ -172,6 +216,11 @@ MainWindow::MainWindow(QWidget* parent)
     if (!settings.value(QStringLiteral("window/stateHasWorldDebug"), false).toBool()) {
         tabifyDockWidget(m_objectsDock, m_debugDock);
         m_debugDock->hide();
+        m_objectsDock->raise();
+    }
+    if (!settings.value(QStringLiteral("window/stateHasEvents"), false).toBool()) {
+        tabifyDockWidget(m_objectsDock, m_eventsDock);
+        m_eventsDock->show();
         m_objectsDock->raise();
     }
 }
@@ -226,16 +275,19 @@ void MainWindow::createActions()
         m_view->setLabelsVisible(checked);
         QSettings().setValue(QStringLiteral("view/showLabels"), checked);
     });
-    m_eventPropsAction = m_viewMenu->addAction(tr("Show &Event Props"));
-    m_eventPropsAction->setCheckable(true);
-    m_eventPropsAction->setToolTip(
-        tr("Show the barriers, chevrons, banners and other props the game only puts out for races and events"));
-    m_eventPropsAction->setChecked(QSettings().value(QStringLiteral("view/showEventProps"), false).toBool());
-    m_world3D->setEventPropsVisible(m_eventPropsAction->isChecked());
-    connect(m_eventPropsAction, &QAction::toggled, this, [this](bool checked) {
-        m_world3D->setEventPropsVisible(checked);
-        QSettings().setValue(QStringLiteral("view/showEventProps"), checked);
-    });
+    QMenu* eventPropsMenu = m_viewMenu->addMenu(tr("&Event Props"));
+    eventPropsMenu->setToolTipsVisible(true);
+    auto* eventPropsGroup = new QActionGroup(this);
+    // updateEventPropsChoices() names the selected race in the second entry.
+    const std::array<QString, 3> eventPropsNames{tr("&None"), QString(), tr("&All Events")};
+    for (std::size_t i = 0; i < m_eventPropsActions.size(); ++i) {
+        QAction* action = eventPropsMenu->addAction(eventPropsNames[i]);
+        action->setCheckable(true);
+        action->setToolTip(eventPropsToolTip(static_cast<int>(i)));
+        eventPropsGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, i] { setEventProps(static_cast<EventProps>(i)); });
+        m_eventPropsActions[i] = action;
+    }
     m_viewMenu->addSeparator();
     auto* viewModes = new QActionGroup(this);
     m_view2DAction = m_viewMenu->addAction(tr("&2D Map"));
@@ -341,6 +393,8 @@ void MainWindow::createDocks()
     m_objectsDock->setWidget(objectsPanel);
     addDockWidget(Qt::RightDockWidgetArea, m_objectsDock);
 
+    createEventsDock();
+
     m_properties = new QTableWidget(0, 2);
     m_properties->setHorizontalHeaderLabels({tr("Property"), tr("Value")});
     m_properties->verticalHeader()->hide();
@@ -381,11 +435,369 @@ void MainWindow::createDocks()
 
     m_viewMenu->addAction(layersDock->toggleViewAction());
     m_viewMenu->addAction(m_objectsDock->toggleViewAction());
+    m_viewMenu->addAction(m_eventsDock->toggleViewAction());
     m_viewMenu->addAction(propertiesDock->toggleViewAction());
     QAction* debugAction = m_debugDock->toggleViewAction();
     debugAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D));
     debugAction->setToolTip(tr("List the model and texture files the 3D world has loaded"));
     m_viewMenu->addAction(debugAction);
+}
+
+void MainWindow::createEventsDock()
+{
+    m_raceModel = new RaceTableModel(this);
+    m_raceProxy = new QSortFilterProxyModel(this);
+    m_raceProxy->setSourceModel(m_raceModel);
+    m_raceProxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
+    m_raceProxy->setFilterKeyColumn(-1);
+    m_raceProxy->setSortRole(Qt::EditRole);
+    m_raceProxy->setSortCaseSensitivity(Qt::CaseInsensitive);
+
+    m_raceFilterEdit = new QLineEdit;
+    m_raceFilterEdit->setPlaceholderText(tr("Filter by name, type, route or class"));
+    m_raceFilterEdit->setClearButtonEnabled(true);
+    connect(m_raceFilterEdit, &QLineEdit::textChanged, this, &MainWindow::applyRaceFilter);
+
+    m_hideRaceButton = new QToolButton;
+    m_hideRaceButton->setText(tr("Hide Race"));
+    m_hideRaceButton->setToolTip(tr("Stop showing the selected race's route and props"));
+    m_hideRaceButton->setEnabled(false);
+    connect(m_hideRaceButton, &QToolButton::clicked, this, &MainWindow::clearRace);
+
+    m_raceTable = new QTableView;
+    m_raceTable->setModel(m_raceProxy);
+    m_raceTable->setSortingEnabled(true);
+    m_raceTable->sortByColumn(-1, Qt::AscendingOrder);
+    m_raceTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_raceTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_raceTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_raceTable->setWordWrap(false);
+    m_raceTable->verticalHeader()->hide();
+    m_raceTable->verticalHeader()->setDefaultSectionSize(m_raceTable->fontMetrics().height() + 6);
+    m_raceTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    m_raceTable->setColumnWidth(RaceTableModel::Name, 200);
+    m_raceTable->setColumnWidth(RaceTableModel::Type, 170);
+    m_raceTable->setColumnWidth(RaceTableModel::Route, 150);
+    for (int column : {RaceTableModel::Laps, RaceTableModel::CarClass}) {
+        m_raceTable->setColumnWidth(column, 50);
+    }
+    m_raceTable->setColumnWidth(RaceTableModel::Length, 70);
+    m_raceTable->setColumnWidth(RaceTableModel::Prize, 90);
+    connect(m_raceTable->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+        &MainWindow::onRaceSelectionChanged);
+    connect(m_raceTable, &QTableView::activated, this, [this](const QModelIndex& index) {
+        const int race = m_raceProxy->mapToSource(index).row();
+        if (race == m_selectedRace) {
+            focusOnRace();
+        } else {
+            selectRace(race, true);
+        }
+    });
+
+    m_eventPropsCombo = new QComboBox;
+    m_eventPropsCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    for (const QString& name : {tr("None"), QString(), tr("All events")}) {
+        m_eventPropsCombo->addItem(name);
+        m_eventPropsCombo->setItemData(
+            m_eventPropsCombo->count() - 1, eventPropsToolTip(m_eventPropsCombo->count() - 1), Qt::ToolTipRole);
+    }
+    connect(m_eventPropsCombo, &QComboBox::activated, this,
+        [this](int index) { setEventProps(static_cast<EventProps>(index)); });
+    auto* eventPropsLabel = new QLabel(tr("Event props in 3D:"));
+    eventPropsLabel->setBuddy(m_eventPropsCombo);
+    auto* eventPropsRow = new QHBoxLayout;
+    eventPropsRow->addWidget(eventPropsLabel);
+    eventPropsRow->addWidget(m_eventPropsCombo);
+    eventPropsRow->addStretch();
+
+    m_raceCount = new QLabel;
+    m_selectedRaceLabel = new QLabel;
+    m_selectedRaceLabel->setTextFormat(Qt::PlainText);
+    auto* selectedRow = new QHBoxLayout;
+    selectedRow->addWidget(m_selectedRaceLabel, 1);
+    selectedRow->addWidget(m_hideRaceButton);
+    auto* panel = new QWidget;
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(4, 4, 4, 4);
+    layout->addWidget(m_raceFilterEdit);
+    layout->addLayout(selectedRow);
+    layout->addLayout(eventPropsRow);
+    layout->addWidget(m_raceTable);
+    layout->addWidget(m_raceCount);
+    m_eventsDock = new QDockWidget(tr("Events"), this);
+    m_eventsDock->setObjectName(QStringLiteral("eventsDock"));
+    m_eventsDock->setWidget(panel);
+    addDockWidget(Qt::RightDockWidgetArea, m_eventsDock);
+}
+
+void MainWindow::applyRaceFilter()
+{
+    m_raceProxy->setFilterFixedString(m_raceFilterEdit->text().trimmed());
+    m_raceCount->setText(m_raceModel->rowCount() == 0 ? tr("No race events for this track")
+                                                      : tr("%1 of %2 races; select one to show its route")
+                                                            .arg(m_raceProxy->rowCount())
+                                                            .arg(m_raceModel->rowCount()));
+}
+
+void MainWindow::onRaceSelectionChanged()
+{
+    if (m_syncingSelection) {
+        return;
+    }
+    const QModelIndexList rows = m_raceTable->selectionModel()->selectedRows();
+    // Filtering the selected row away clears the table's selection; the race
+    // stays shown until the user picks another or hides it.
+    if (!rows.isEmpty()) {
+        selectRace(m_raceProxy->mapToSource(rows.first()).row(), true);
+    }
+}
+
+void MainWindow::selectRace(int race, bool focus)
+{
+    if (!m_map || race < 0 || static_cast<std::size_t>(race) >= m_map->races.size()) {
+        return;
+    }
+    removeRaceOverlay();
+    m_selectedRace = race;
+    m_hideRaceButton->setEnabled(true);
+    const fh1::Race& selected = m_map->races[static_cast<std::size_t>(race)];
+
+    if (!m_syncingSelection) {
+        m_syncingSelection = true;
+        const QModelIndex proxy = m_raceProxy->mapFromSource(m_raceModel->index(race, 0));
+        if (proxy.isValid()) {
+            m_raceTable->selectionModel()->select(
+                proxy, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+            m_raceTable->scrollTo(proxy);
+        }
+        m_syncingSelection = false;
+    }
+
+    // Other props of the same event are shown in the 3D world even when the
+    // install lacks the route file.
+    applyEventPropFilter();
+    if (selected.route >= 0) {
+        auto overlay = std::make_shared<fh1::MapData>();
+        overlay->trackName = m_map->trackName;
+        overlay->calibration = m_map->calibration;
+        overlay->layers = fh1::raceOverlay(selected, m_map->raceRoutes[static_cast<std::size_t>(selected.route)]);
+        m_raceOverlay = overlay;
+        for (std::size_t i = 0; i < overlay->layers.size(); ++i) {
+            const fh1::Layer& layer = overlay->layers[i];
+            // Past the map's layer indices, so the palette offsets differ;
+            // the race layers set their own colours anyway.
+            const int layerIndex = static_cast<int>(m_map->layers.size() + i);
+            LayerItem* item = nullptr;
+            if (layer.kind == fh1::FeatureKind::Point) {
+                item = new PointLayerItem(layer, m_map->calibration, layerIndex, kRaceMarkerRadius);
+            } else {
+                auto* shapes = new ShapeLayerItem(layer, m_map->calibration, layerIndex);
+                shapes->setLineWidthScale(kRaceLineWidthScale);
+                item = shapes;
+            }
+            item->setZValue(kRaceOverlayZ + static_cast<double>(i));
+            m_scene->addItem(item);
+            m_raceItems.push_back(item);
+        }
+        m_world3D->setOverlay(m_raceOverlay);
+        updateLabelSources();
+    } else {
+        statusBar()->showMessage(tr("%1 runs on route %2, which this install has no route file for")
+                                     .arg(selected.name)
+                                     .arg(selected.routeId),
+            8000);
+    }
+    if (m_selection.layer < 0 && !m_selectedModel) {
+        showRaceProperties();
+    }
+    if (focus) {
+        focusOnRace();
+    }
+}
+
+void MainWindow::removeRaceOverlay()
+{
+    m_view->setLabelSources({});
+    for (LayerItem* item : m_raceItems) {
+        m_scene->removeItem(item);
+        delete item;
+    }
+    m_raceItems.clear();
+    m_raceOverlay.reset();
+    m_world3D->setOverlay(nullptr);
+    updateLabelSources();
+}
+
+const fh1::RouteTransform* MainWindow::raceStart() const
+{
+    if (!m_map || m_selectedRace < 0) {
+        return nullptr;
+    }
+    const fh1::Race& race = m_map->races[static_cast<std::size_t>(m_selectedRace)];
+    if (race.route < 0) {
+        return nullptr;
+    }
+    const std::vector<const fh1::RouteTransform*> grid
+        = fh1::routePoints(m_map->raceRoutes[static_cast<std::size_t>(race.route)], fh1::RoutePointKind::StartSlot);
+    return grid.empty() ? nullptr : grid.front();
+}
+
+void MainWindow::clearRace()
+{
+    removeRaceOverlay();
+    const bool hadRace = m_selectedRace >= 0;
+    m_selectedRace = -1;
+    applyEventPropFilter();
+    m_hideRaceButton->setEnabled(false);
+    if (!m_syncingSelection) {
+        m_syncingSelection = true;
+        m_raceTable->clearSelection();
+        m_syncingSelection = false;
+    }
+    if (hadRace && m_selection.layer < 0 && !m_selectedModel) {
+        m_properties->setRowCount(0);
+    }
+}
+
+void MainWindow::focusOnRace()
+{
+    if (m_raceItems.empty()) {
+        return;
+    }
+    QRectF bounds;
+    for (const LayerItem* item : m_raceItems) {
+        bounds = bounds.united(item->boundingRect());
+    }
+    m_view->fitRect(bounds, kFocusZoom);
+    if (const fh1::RouteTransform* start = raceStart()) {
+        m_world3D->lookAlong(start->position, start->facing);
+    }
+}
+
+void MainWindow::showRaceProperties()
+{
+    m_properties->setRowCount(0);
+    if (!m_map || m_selectedRace < 0) {
+        return;
+    }
+    const fh1::Race& race = m_map->races[static_cast<std::size_t>(m_selectedRace)];
+    const QLocale locale;
+    fh1::Properties rows{
+        {tr("Event"), race.name},
+        {tr("Event ID"), race.eventId},
+        {tr("Type"), race.type},
+        {tr("Route"), race.routeName},
+        {tr("Route ID"), QString::number(race.routeId)},
+        {tr("Laps"), QString::number(race.laps)},
+        {tr("Length"), tr("%1 m").arg(locale.toString(race.length))},
+        {tr("Car class"), race.carClass},
+        {tr("Prize"), tr("%1 CR").arg(locale.toString(race.prize))},
+    };
+    if (race.route < 0) {
+        rows.append({tr("Route file"), tr("missing from this install")});
+    } else {
+        const fh1::RaceRoute& route = m_map->raceRoutes[static_cast<std::size_t>(race.route)];
+        rows.append({tr("Route file"), route.source});
+        rows.append({tr("Racing line"),
+            route.racingLine.empty()
+                ? tr("none; the route is drawn straight between checkpoints")
+                : tr("%n point(s) from aiopenworld.zip", nullptr, static_cast<int>(route.racingLine.size()))});
+        rows.append({tr("Start grid"),
+            tr("%n slot(s)", nullptr,
+                static_cast<int>(fh1::routePoints(route, fh1::RoutePointKind::StartSlot).size()))});
+        rows.append(
+            {tr("Checkpoints"), QString::number(fh1::routePoints(route, fh1::RoutePointKind::Checkpoint).size())});
+    }
+    switch (m_eventProps) {
+    case EventProps::None:
+        rows.append({tr("Event props"), tr("hidden (Event props in 3D: None)")});
+        break;
+    case EventProps::SelectedRace:
+        rows.append({tr("Event props"),
+            tr("only the props named after %1 or put out for route %2").arg(race.eventId).arg(race.routeId)});
+        break;
+    case EventProps::AllEvents:
+        rows.append({tr("Event props"), tr("every event's props (Event props in 3D: All events)")});
+        break;
+    }
+    m_properties->setRowCount(static_cast<int>(rows.size()));
+    for (int i = 0; i < rows.size(); ++i) {
+        auto* value = new QTableWidgetItem(rows.at(i).second);
+        value->setToolTip(rows.at(i).second);
+        m_properties->setItem(i, 0, new QTableWidgetItem(rows.at(i).first));
+        m_properties->setItem(i, 1, value);
+    }
+}
+
+void MainWindow::setEventProps(EventProps mode)
+{
+    m_eventProps = mode;
+    const auto index = static_cast<std::size_t>(mode);
+    m_eventPropsActions[index]->setChecked(true);
+    m_eventPropsCombo->setCurrentIndex(static_cast<int>(index));
+    if (!m_script) {
+        QSettings settings;
+        settings.setValue(QStringLiteral("view/eventProps"), QString(kEventPropsSettings[index]));
+        settings.remove(QStringLiteral("view/showEventProps"));
+    }
+    applyEventPropFilter();
+    if (m_selectedRace >= 0 && m_selection.layer < 0 && !m_selectedModel) {
+        showRaceProperties();
+    }
+}
+
+void MainWindow::updateEventPropsChoices()
+{
+    const auto selectedRace = static_cast<std::size_t>(EventProps::SelectedRace);
+    const bool haveRace = m_map && m_selectedRace >= 0;
+    QString race;
+    if (haveRace) {
+        const fh1::Race& selected = m_map->races[static_cast<std::size_t>(m_selectedRace)];
+        race = selected.name == selected.eventId ? selected.name
+                                                 : QStringLiteral("%1 (%2)").arg(selected.name, selected.eventId);
+    }
+    QAction* action = m_eventPropsActions[selectedRace];
+    // Menu text treats '&' as a mnemonic marker; race names can contain one.
+    QString escaped = race;
+    escaped.replace(QLatin1Char('&'), QLatin1String("&&"));
+    action->setText(haveRace ? tr("&Selected Race: %1").arg(escaped) : tr("&Selected Race (none selected)"));
+    action->setEnabled(haveRace);
+
+    m_selectedRaceLabel->setText(haveRace ? tr("Selected: %1").arg(race) : tr("No race selected"));
+
+    const auto item = static_cast<int>(selectedRace);
+    m_eventPropsCombo->setItemText(
+        item, haveRace ? tr("Selected race: %1").arg(race) : tr("Selected race (none selected)"));
+    if (auto* model = qobject_cast<QStandardItemModel*>(m_eventPropsCombo->model())) {
+        model->item(item)->setEnabled(haveRace);
+    }
+}
+
+void MainWindow::applyEventPropFilter()
+{
+    updateEventPropsChoices();
+    switch (m_eventProps) {
+    case EventProps::None:
+        m_world3D->setEventPropFilter({});
+        break;
+    case EventProps::SelectedRace:
+        // With no race selected, the world looks as it does outside events.
+        m_world3D->setEventPropFilter(m_map && m_selectedRace >= 0
+                ? fh1::EventPropFilter::race(m_map->races[static_cast<std::size_t>(m_selectedRace)].eventId,
+                      m_map->races[static_cast<std::size_t>(m_selectedRace)].routeId)
+                : fh1::EventPropFilter());
+        break;
+    case EventProps::AllEvents:
+        m_world3D->setEventPropFilter(fh1::EventPropFilter::all());
+        break;
+    }
+}
+
+void MainWindow::updateLabelSources()
+{
+    std::vector<const LayerItem*> sources(m_raceItems.rbegin(), m_raceItems.rend());
+    sources.insert(sources.end(), m_layerItems.rbegin(), m_layerItems.rend());
+    m_view->setLabelSources(std::move(sources));
 }
 
 std::vector<std::vector<bool>> MainWindow::entityVisibility() const
@@ -619,7 +1031,9 @@ void MainWindow::onLoadFinished()
     }
 
     clearSelection();
+    clearRace();
     m_model->setMap(nullptr);
+    m_raceModel->setMap(nullptr);
     m_map = std::move(result.map);
     m_trackName = m_map->trackName;
     QSettings().setValue(QStringLiteral("lastTrack"), m_trackName);
@@ -634,6 +1048,8 @@ void MainWindow::onLoadFinished()
     m_world3D->setEntities(m_map, entityVisibility());
     m_model->setMap(m_map.get());
     applyFilter();
+    m_raceModel->setMap(m_map.get());
+    applyRaceFilter();
     m_noDataLabel->setText(tr("<p><b>Nothing to show for %1</b></p>"
                               "<p>Its ribbon files hold no placed objects, routes or zones, and the game "
                               "ships no map image for it.</p>")
@@ -710,7 +1126,7 @@ void MainWindow::buildScene()
     }
     m_scene->setSceneRect(bounds);
     m_view->setMetresPerSceneUnit(calibration.metresPerPixel());
-    m_view->setLabelSources({m_layerItems.rbegin(), m_layerItems.rend()});
+    updateLabelSources();
 }
 
 void MainWindow::buildLayerTree()
@@ -887,6 +1303,8 @@ void MainWindow::clearSelection()
         m_table->clearSelection();
         m_syncingSelection = false;
     }
+    // With nothing else selected, the panel describes the race shown.
+    showRaceProperties();
 }
 
 void MainWindow::selectModel(const fh1::PickHit& hit)
@@ -1161,6 +1579,17 @@ void MainWindow::runScript()
         const QPointF scenePos = m_map->calibration.worldToImage(script.centre->x(), script.centre->y());
         m_view->focusOn(QRectF(scenePos, QSizeF(0.0, 0.0)), script.zoom);
     }
+    if (!script.race.isEmpty()) {
+        const auto race = std::find_if(m_map->races.begin(), m_map->races.end(),
+            [&script](const fh1::Race& r) { return r.eventId.compare(script.race, Qt::CaseInsensitive) == 0; });
+        if (race != m_map->races.end()) {
+            selectRace(static_cast<int>(race - m_map->races.begin()), !script.centre.has_value());
+            m_eventsDock->show();
+            m_eventsDock->raise();
+        } else {
+            std::fprintf(stderr, "No race with event ID %s\n", qPrintable(script.race));
+        }
+    }
     if (!script.select.isEmpty()) {
         bool found = false;
         for (std::size_t l = 0; l < m_map->layers.size() && !found; ++l) {
@@ -1388,6 +1817,10 @@ void MainWindow::placeWorldCamera()
         m_world3D->setCamera(camera);
         return;
     }
+    if (const fh1::RouteTransform* start = raceStart()) {
+        m_world3D->lookAlong(start->position, start->facing);
+        return;
+    }
     // Start above the middle of what the 2D map shows, facing north.
     const QPointF centre = m_view->mapToScene(m_view->viewport()->rect().center());
     const QPointF world = m_map->calibration.imageToWorld(centre);
@@ -1405,6 +1838,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
         settings.setValue(QStringLiteral("window/state"), saveState());
         settings.setValue(QStringLiteral("window/stateHasWorldDebug"), true);
+        settings.setValue(QStringLiteral("window/stateHasEvents"), true);
     }
     QMainWindow::closeEvent(event);
 }

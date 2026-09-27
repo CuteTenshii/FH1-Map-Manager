@@ -36,6 +36,24 @@ struct Placement {
     /// cones, bins) carry blocks with other values and are always there.
     /// Inferred from which models carry which blocks.
     bool eventProp = false;
+    /// For some event props, the event that shows them: its HorizonEventID
+    /// ("FR04"), or that ID with a suffix naming a part of its set dressing
+    /// ("FR04_01", "FR04_NODE"). Barn finds, gas stations and outposts carry
+    /// names of their own. Empty when the record names nothing, as for the
+    /// props of street races and much of the festival.
+    QString eventTag;
+    /// The race routes (Tracks.RouteId in gamedb) the game puts the prop
+    /// out for: start gantries, barriers and chevrons along a route, shared
+    /// by every race run on it. Props with an eventTag mostly list route 0,
+    /// the free-roam session's.
+    std::vector<std::uint8_t> eventRoutes;
+
+    /// True if the prop belongs to the event whose HorizonEventID is
+    /// `eventId`, by its eventTag.
+    bool belongsToEvent(const QString& eventId) const;
+    /// True if the prop belongs to the race `eventId` run on route
+    /// `routeId`: by its eventTag, or by the route in eventRoutes.
+    bool belongsToRace(const QString& eventId, int routeId) const;
 
     /// Maps a point of the parsed model (whose Z the parser already negated)
     /// to world coordinates.
@@ -52,8 +70,10 @@ struct Placement {
 ///     n transform records, one per draw above, in the same order:
 ///         3 half floats (ranges), 3 f32 position, 9 half floats (rows),
 ///         16 zero bytes, u8 c, then c blocks of u32 a, u8 m, m bytes
-///         and 32 bytes; a is 0xFFFFFFFF for event props (see
-///         Placement::eventProp), the rest is not needed here
+///         and a 32-byte NUL-padded name; a is 0xFFFFFFFF for event props
+///         (see Placement::eventProp), whose m bytes are
+///         Placement::eventRoutes and whose name, when not empty, is
+///         Placement::eventTag
 ///
 /// A zone file lists the draws the game draws while the camera is in that
 /// zone (ZoneGrid says where each zone is), so zones overlap and a draw

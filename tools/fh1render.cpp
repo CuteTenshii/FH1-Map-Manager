@@ -145,7 +145,8 @@ int main(int argc, char** argv)
         }
         index->save(cachePath, signature);
     }
-    const fh1::WorldTileGrid grid(*index, 500.0F, parser.isSet(eventPropsOption));
+    const fh1::WorldTileGrid grid(
+        *index, 500.0F, parser.isSet(eventPropsOption) ? fh1::EventPropFilter::all() : fh1::EventPropFilter());
 
     std::optional<fh1::TrackTextures> textures;
     if (!parser.isSet(untexturedOption)) {

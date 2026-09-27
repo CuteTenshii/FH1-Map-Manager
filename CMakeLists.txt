@@ -85,6 +85,8 @@ add_library(fh1viewer STATIC
     src/app/MapView.h
     src/app/ModelPreview.cpp
     src/app/ModelPreview.h
+    src/app/RaceTableModel.cpp
+    src/app/RaceTableModel.h
     src/app/WorldDebugPanel.cpp
     src/app/WorldDebugPanel.h
     src/app/WorldRenderer.cpp
