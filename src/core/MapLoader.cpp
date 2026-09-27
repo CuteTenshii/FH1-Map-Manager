@@ -334,6 +334,7 @@ void loadRaces(const Context& ctx, const QHash<int, std::vector<QVector3D>>& rac
         race.opponents = row.opponents;
         race.timeOfDay = row.timeOfDay;
         race.carClassId = row.carClassId;
+        race.level = row.level;
         if (race.route < 0) {
             ctx.warn(QStringLiteral("race %1 runs on route %2, which has no TrackRoute file")
                     .arg(race.eventId)
@@ -363,13 +364,21 @@ std::vector<Activity> loadActivities(const Context& ctx)
     const QString prefix = ForzaZip::normalizeName(ctx.track() + QLatin1Char('/'));
     for (const ZipEntry& entry : zip.entries()) {
         const QString name = ForzaZip::normalizeName(entry.name);
-        if (!name.startsWith(prefix) || !name.endsWith(QLatin1String(".xml"))) {
+        // The game-wide configs lie at the top; each track's in its folder.
+        const bool topLevel = !name.contains(QLatin1Char('/'));
+        if ((!topLevel && !name.startsWith(prefix)) || !name.endsWith(QLatin1String(".xml"))) {
             continue;
         }
         QString error;
         const QByteArray data = zip.read(entry, &error);
         if (data.isNull()) {
             ctx.warn(error);
+            continue;
+        }
+        if (!name.endsWith(QLatin1String("/career_event_activations.xml"))) {
+            ctx.map().scripts.addFile(entry.name, data);
+        }
+        if (topLevel) {
             continue;
         }
         try {

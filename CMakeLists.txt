@@ -50,6 +50,8 @@ add_library(fh1core STATIC
     src/core/RenderMesh.h
     src/core/ScatterSet.cpp
     src/core/ScatterSet.h
+    src/core/ScriptReferences.cpp
+    src/core/ScriptReferences.h
     src/core/StringTable.cpp
     src/core/StringTable.h
     src/core/TrackPlacements.cpp

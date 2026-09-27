@@ -229,6 +229,19 @@ private slots:
         const fh1::Race* plains = find(QStringLiteral("STREET_PLNS_005"));
         QVERIFY(plains != nullptr);
         QCOMPARE(plains->routeId, 12);
+
+        // The game's scripts point the sat nav at FR02 after the opening, and
+        // the opening race, HORIZON Heats, has cutscenes of its own; an
+        // ordinary race is named only by its own activation.
+        QVERIFY(map.scripts.filesUsing(QStringLiteral("FR02")).contains(QStringLiteral("first_time_career.xml")));
+        QVERIFY(
+            map.scripts.filesUsing(QStringLiteral("festival_02")).contains(QStringLiteral("first_time_career.xml")));
+        QVERIFY(!map.scripts.filesUsing(QStringLiteral("FESTIVAL_SECOND")).isEmpty());
+        QVERIFY(map.scripts.filesUsing(QStringLiteral("FR08")).isEmpty());
+        const fh1::Race* heats = find(QStringLiteral("FESTIVAL_SECOND"));
+        QVERIFY(heats != nullptr);
+        QCOMPARE(heats->level, -1);
+        QCOMPARE(rush->level, 0);
         const fh1::RaceRoute& plainsRoute = map.raceRoutes[static_cast<std::size_t>(plains->route)];
         QVERIFY(plainsRoute.racingLine.empty());
         const std::vector<fh1::Layer> overlay = fh1::raceOverlay(*plains, plainsRoute);

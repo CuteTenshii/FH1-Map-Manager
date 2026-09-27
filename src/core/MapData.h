@@ -2,6 +2,7 @@
 
 #include "GameObjects.h"
 #include "MapCalibration.h"
+#include "ScriptReferences.h"
 
 #include <QColor>
 #include <QHash>
@@ -138,6 +139,9 @@ struct Race {
     int timeOfDay = 0;
     /// The car class the race is for: a CarClasses.Id (see MapData::carClasses).
     int carClassId = -1;
+    /// Events.Level: the career level it belongs to; -1 for the opening
+    /// race (HORIZON Heats) and the free-roam session.
+    int level = 0;
 };
 
 /// A car class a race can be for.
@@ -166,6 +170,10 @@ struct MapData {
     /// features in the same order; empty when the track has none or they
     /// do not match up.
     GameObjectsFile gameObjects;
+    /// Names the game's scripts in gamemodes.zip use, for this track and
+    /// the whole game. The list of every event's activation
+    /// (career_event_activations.xml) is left out, as each event has one.
+    ScriptReferences scripts;
     /// The in-game map's icons, keyed by its `activity_type` names.
     QHash<QString, QImage> icons;
     /// Non-fatal problems met while loading, e.g. a missing optional file.

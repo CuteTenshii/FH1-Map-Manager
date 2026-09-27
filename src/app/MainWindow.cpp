@@ -52,6 +52,7 @@
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTimeEdit>
@@ -1214,8 +1215,13 @@ void MainWindow::deleteGameObjects(const std::vector<std::size_t>& indices, bool
                 config = value;
             }
         }
+        const QString id = m_map->gameObjects.objects[index].gameplayId;
         if (!activity.isEmpty()) {
-            used[tr("%1 (%2)").arg(activity, config)].append(m_map->gameObjects.objects[index].gameplayId);
+            used[tr("the activity %1 (%2)").arg(activity, config)].append(id);
+        }
+        const QStringList scripts = m_map->scripts.filesUsing(id);
+        if (!scripts.isEmpty()) {
+            used[tr("the game's scripts (%1)").arg(scripts.join(QStringLiteral(", ")))].append(id);
         }
     }
     const QString first = m_map->gameObjects.objects[sorted.front()].gameplayId;
@@ -1225,8 +1231,8 @@ void MainWindow::deleteGameObjects(const std::vector<std::size_t>& indices, bool
             lines.append(tr("%1, used by %2").arg(ids.join(QStringLiteral(", ")), activity));
         }
         if (QMessageBox::question(this, tr("Delete Gameplay Objects"),
-                tr("The game's activities use objects you are deleting:\n\n%1\n\nDeleting them can break those "
-                   "activities in the game. Delete anyway?")
+                tr("The game uses objects you are deleting:\n\n%1\n\nDeleting them can break the game where it "
+                   "uses them. Delete anyway?")
                     .arg(lines.join(QLatin1Char('\n'))),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
             != QMessageBox::Yes) {
@@ -1550,6 +1556,40 @@ void MainWindow::deleteRaceEvent()
                                                        .arg(referenceText.join(QStringLiteral(", "))));
     rowsBox->setChecked(canDeleteRows);
     rowsBox->setEnabled(canDeleteRows);
+
+    // Events the game itself relies on start unticked: deleting the opening
+    // race froze the game at the start.
+    QStringList scripts = m_map->scripts.filesUsing(race.eventId);
+    for (const std::size_t index : objects) {
+        scripts += m_map->scripts.filesUsing(m_map->gameObjects.objects[index].gameplayId);
+    }
+    scripts.removeDuplicates();
+    scripts.sort(Qt::CaseInsensitive);
+    QStringList risks;
+    if (race.level < 0) {
+        risks.append(tr("It is a special event of the career, such as its opening race (Level %1 in gamedb.slt).")
+                .arg(race.level));
+    }
+    if (!scripts.isEmpty()) {
+        risks.append(tr("The game's scripts use it or its objects: %1.").arg(scripts.join(QStringLiteral(", "))));
+    }
+    QWidget* warning = nullptr;
+    if (!risks.isEmpty()) {
+        objectsBox->setChecked(false);
+        rowsBox->setChecked(false);
+        warning = new QWidget;
+        auto* icon = new QLabel;
+        const int size = style()->pixelMetric(QStyle::PM_MessageBoxIconSize);
+        icon->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxWarning).pixmap(size, size));
+        icon->setAlignment(Qt::AlignTop);
+        auto* text = new QLabel(
+            tr("%1 Deleting it can stop the game working, so nothing is ticked.").arg(risks.join(QLatin1Char(' '))));
+        text->setWordWrap(true);
+        auto* row = new QHBoxLayout(warning);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->addWidget(icon);
+        row->addWidget(text, 1);
+    }
     auto* note = new QLabel(tr("Left as they are: its props (barriers, banners) in bin.zip, its activity in "
                                "gamemodes.zip, its effects in ParticleEmitters.xml, and its route file, which "
                                "other races can share."));
@@ -1566,6 +1606,9 @@ void MainWindow::deleteRaceEvent()
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     auto* layout = new QVBoxLayout(dialog);
     layout->addWidget(question);
+    if (warning != nullptr) {
+        layout->addWidget(warning);
+    }
     layout->addWidget(objectsBox);
     layout->addWidget(rowsBox);
     layout->addWidget(note);

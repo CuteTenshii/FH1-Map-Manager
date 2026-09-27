@@ -5,6 +5,7 @@
 #include "MapLoader.h"
 #include "Races.h"
 #include "RouteEditing.h"
+#include "ScriptReferences.h"
 
 #include <QDir>
 #include <QFile>
@@ -590,6 +591,24 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(
             fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0 GameplayID='A'></Obj0></GameObjs>", {}));
         QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0>", {}));
+    }
+
+    void scriptReferences()
+    {
+        fh1::ScriptReferences scripts;
+        scripts.addFile(QStringLiteral("first_time_career.xml"),
+            "<A><Behaviour id='CSetSatNavDestination' destination_object='FR02'/></A>");
+        scripts.addFile(QStringLiteral("Colorado/cutscenes.xml"),
+            "<A><Shot name='prerace_intro_FESTIVAL_SECOND' track='FESTIVAL_FIRST_001'/></A>");
+        scripts.addFile(QStringLiteral("broken.xml"), "<A><B value='FR02'/><C");
+        QCOMPARE(scripts.filesUsing(QStringLiteral("fr02")),
+            (QStringList{QStringLiteral("broken.xml"), QStringLiteral("first_time_career.xml")}));
+        QCOMPARE(scripts.filesUsing(QStringLiteral("FESTIVAL_SECOND")),
+            QStringList{QStringLiteral("Colorado/cutscenes.xml")});
+        // A name is used whole or after an underscore, never as a part.
+        QVERIFY(scripts.filesUsing(QStringLiteral("FR0")).isEmpty());
+        QVERIFY(scripts.filesUsing(QStringLiteral("INTRO_FESTIVAL")).isEmpty());
+        QVERIFY(scripts.filesUsing({}).isEmpty());
     }
 
     void transformKinds()

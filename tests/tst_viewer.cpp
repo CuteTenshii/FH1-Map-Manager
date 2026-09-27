@@ -130,7 +130,7 @@ bool writeRaceInstall(
         QSqlQuery query(db);
         const char* const createEvents = "CREATE TABLE Events (Id, Name, ShortName, Description, CareerTypeId, "
                                          "TargetClass, CashPrize, HorizonEventID, CareerEventStyle, "
-                                         "NumberOfDrivers, TimeOfDayStart)";
+                                         "NumberOfDrivers, TimeOfDayStart, Level)";
         for (const char* statement : {
                  "CREATE TABLE Tracks (id, DisplayName, MediaName, Length, RouteId, DevName)",
                  createEvents,
@@ -138,7 +138,7 @@ bool writeRaceInstall(
                  "CREATE TABLE CareerEventTypes (id, Name)",
                  "CREATE TABLE CarClasses (Id, DisplayName)",
                  "INSERT INTO Tracks VALUES (1005, 'Test Loop', 'testbed', 1200, 5, 'TEST_LOOP')",
-                 "INSERT INTO Events VALUES (1, 'Test Race', '', '', 1, 0, 1000, 'FR99', 1, 7, 36000)",
+                 "INSERT INTO Events VALUES (1, 'Test Race', '', '', 1, 0, 1000, 'FR99', 1, 7, 36000, 0)",
                  "INSERT INTO Races VALUES (1, 1, 1, 1005, 2)",
                  "INSERT INTO CareerEventTypes VALUES (1, 'Circuit')",
                  "INSERT INTO CarClasses VALUES (0, 'D')",

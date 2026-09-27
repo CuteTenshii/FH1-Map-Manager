@@ -89,7 +89,8 @@ std::vector<GameDatabase::RaceRow> GameDatabase::races(const QString& mediaName)
     QSqlQuery query(QSqlDatabase::database(m_connection, false));
     query.prepare(QStringLiteral(
         "SELECT e.HorizonEventID, e.Name, ty.Name, cl.DisplayName, t.DisplayName, t.RouteId, r.NumLaps, "
-        "t.Length, e.CashPrize, e.Id, r.Id, e.NumberOfDrivers, e.TimeOfDayStart, e.TargetClass FROM Races r JOIN "
+        "t.Length, e.CashPrize, e.Id, r.Id, e.NumberOfDrivers, e.TimeOfDayStart, e.TargetClass, e.Level FROM Races r "
+        "JOIN "
         "Events e ON e.Id = r.EventId JOIN Tracks t ON t.id = r.TrackId "
         "LEFT JOIN CareerEventTypes ty ON ty.id = e.CareerTypeId LEFT JOIN CarClasses cl ON cl.Id = e.TargetClass "
         "WHERE lower(t.MediaName) = lower(?) AND e.CareerEventStyle <> 0 ORDER BY e.Id, r.RaceNumber"));
@@ -114,6 +115,7 @@ std::vector<GameDatabase::RaceRow> GameDatabase::races(const QString& mediaName)
         row.opponents = query.value(11).toInt();
         row.timeOfDay = query.value(12).toInt();
         row.carClassId = query.value(13).toInt();
+        row.level = query.value(14).toInt();
         result.push_back(std::move(row));
     }
     return result;

@@ -53,6 +53,8 @@ public:
         int timeOfDay = 0;
         /// Events.TargetClass, a CarClasses.Id.
         int carClassId = -1;
+        /// Events.Level.
+        int level = 0;
     };
     /// A car class: CarClasses.Id and its DisplayName reference
     /// (CarClasses.str).
