@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "ArchiveUpdate.h"
 #include "BackgroundItem.h"
 #include "EditHistoryPanel.h"
 #include "EditSession.h"
@@ -833,8 +834,11 @@ void MainWindow::updateEditActions()
         pointDeletable = index && fh1::canInsertOrRemove(route, *index);
     }
     const bool nothingElseSelected = m_selection.layer < 0 && !m_selectedModel;
+    const std::shared_ptr<const fh1::WorldIndex> worldIndex = m_world3D->index();
+    const bool modelDeletable = m_selectedModel && worldIndex && m_selectedModel->chunk < worldIndex->chunks().size()
+        && worldIndex->chunks()[m_selectedModel->chunk].placed;
     m_deleteAction->setEnabled(objectSelected || pointDeletable || canDeleteFeatures(m_selection.layer)
-        || (m_selectedRace >= 0 && nothingElseSelected));
+        || modelDeletable || (m_selectedRace >= 0 && nothingElseSelected));
     m_deleteGroupAction->setEnabled(objectSelected
         && fh1::gameObjectGroup(m_map->gameObjects, static_cast<std::size_t>(m_selection.feature), kGroupRadius).size()
             > 1);
@@ -1078,6 +1082,10 @@ std::optional<float> MainWindow::groundHeightAt(float x, float z) const
 void MainWindow::registerEditableFiles()
 {
     m_edits->reset(m_install.mediaPath());
+    m_archiveEdits = {};
+    m_archiveEditsIndex.reset();
+    m_zoneRecords.reset();
+    m_world3D->setHiddenChunks({});
     m_loadedRaces = m_map->races;
     m_deletedRaces.clear();
     if (gameObjectsLayer() >= 0) {
@@ -1474,7 +1482,7 @@ void MainWindow::deleteSelection(bool withGroup)
         return;
     }
     if (m_selectedModel) {
-        statusBar()->showMessage(tr("Models of the 3D world cannot be deleted yet"), 8000);
+        deleteModel();
         return;
     }
     if (m_selectedRace >= 0) {
@@ -1681,6 +1689,85 @@ void MainWindow::editRaceSettings()
         apply(target);
     });
     dialog->open();
+}
+
+QString MainWindow::modelName(std::uint32_t chunk) const
+{
+    const std::shared_ptr<const fh1::WorldIndex> index = m_world3D->index();
+    const std::shared_ptr<const fh1::ForzaZip> archive = m_world3D->archive();
+    if (!index || !archive || chunk >= index->chunks().size()) {
+        return {};
+    }
+    const fh1::ZipEntry& entry = archive->entries()[index->chunks()[chunk].entry];
+    const auto header = fh1::rendermesh::readHeader(archive->readPrefix(entry, fh1::rendermesh::kHeaderBytes));
+    return header && !header->firstPartName.isEmpty() ? header->firstPartName : entry.name;
+}
+
+void MainWindow::deleteModel()
+{
+    const std::shared_ptr<const fh1::WorldIndex> index = m_world3D->index();
+    const std::shared_ptr<const fh1::ForzaZip> archive = m_world3D->archive();
+    if (!m_selectedModel || !index || !archive || m_selectedModel->chunk >= index->chunks().size()) {
+        return;
+    }
+    const std::uint32_t chunk = m_selectedModel->chunk;
+    if (!index->chunks()[chunk].placed) {
+        statusBar()->showMessage(tr("%1 is part of the world's own geometry (terrain, roads, buildings modelled in "
+                                    "place), which cannot be removed")
+                                     .arg(modelName(chunk)),
+            10000);
+        return;
+    }
+    const QString archivePath = m_install.resolve(QStringLiteral("tracks/%1/bin.zip").arg(m_trackName));
+    if (archivePath.isEmpty()) {
+        return;
+    }
+    if (!m_zoneRecords) {
+        QString error;
+        m_zoneRecords = runWithProgress<std::optional<fh1::ZoneRecordIndex>>(this,
+            tr("Reading where the zone files place models (first time only)…"),
+            [&archive, &error](const ProgressReport&) { return fh1::ZoneRecordIndex::build(*archive, &error); });
+        if (!m_zoneRecords) {
+            reportError(tr("Delete Model"), tr("Cannot read the zone files: %1").arg(error));
+            return;
+        }
+    }
+    // Edits made against another index (after the world was rebuilt) keep
+    // their files but not their hidden chunks.
+    if (m_archiveEditsIndex != index) {
+        m_archiveEdits.hidden.clear();
+        m_archiveEditsIndex = index;
+    }
+    const ArchiveEditState before = m_archiveEdits;
+    ArchiveEditState after = before;
+    QString error;
+    if (!fh1::removePlacedModel(*archive, *index, *m_zoneRecords, chunk, after.entries, &error)) {
+        reportError(tr("Delete Model"), tr("Cannot remove %1: %2").arg(modelName(chunk), error));
+        return;
+    }
+    after.hidden.resize(index->chunks().size(), false);
+    for (const std::uint32_t c : fh1::placedModelChunks(*index, chunk)) {
+        after.hidden[c] = true;
+    }
+    const QString name = modelName(chunk);
+    m_edits->addLargeFile(QStringLiteral("archive"), tr("bin.zip (models on the map)"),
+        QDir(m_install.mediaPath()).relativeFilePath(archivePath), [this, archivePath]() -> EditSession::Job {
+            // The worker writes the entries as they are when saving starts.
+            return [archivePath, entries = m_archiveEdits.entries](
+                       const QString& path, QString* writeError, const ProgressReport& progress) {
+                return fh1::writeUpdatedArchive(archivePath, path, entries, writeError, progress);
+            };
+        });
+    const auto apply = [this](const ArchiveEditState& state) {
+        m_archiveEdits = state;
+        clearSelection();
+        m_world3D->setHiddenChunks(state.hidden);
+    };
+    m_edits->push(QStringLiteral("archive"),
+        new StateCommand<ArchiveEditState>(before, after, apply, tr("Delete model %1").arg(name)));
+    apply(after);
+    statusBar()->showMessage(
+        tr("Removed %1 from the map; its collision, if any, is in Collision objects").arg(name), 10000);
 }
 
 QStringList MainWindow::backedUpFiles() const
@@ -3258,6 +3345,9 @@ void MainWindow::onWorldLoaded()
         }
         return;
     }
+    // Models removed while an earlier world was shown only carry over to
+    // the same index; the chunks of another one are numbered differently.
+    m_world3D->setHiddenChunks(result.index == m_archiveEditsIndex ? m_archiveEdits.hidden : std::vector<bool>());
     m_world3D->setWorld(result.archive, result.index, result.textures);
     placeWorldCamera();
     QString message = tr("3D world: %1 meshes, %2 of them placed props")

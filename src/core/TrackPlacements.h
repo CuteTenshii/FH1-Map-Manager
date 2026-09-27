@@ -102,9 +102,16 @@ public:
     TrackPlacements(const TrackPlacements&) = delete;
     TrackPlacements& operator=(const TrackPlacements&) = delete;
 
-    /// Parses one zone file into (draw record, placement) pairs.
+    /// Parses one zone file into (draw record, placement) pairs. With
+    /// `recordOffsets`, also gives where each pair's transform record starts
+    /// in the file, in the same order.
     static std::optional<std::vector<std::pair<std::uint32_t, Placement>>> readZone(
-        const QByteArray& zone, QString* error = nullptr);
+        const QByteArray& zone, QString* error = nullptr, std::vector<qsizetype>* recordOffsets = nullptr);
+
+    /// Hides the placement of the transform record at `recordOffset` in
+    /// `zone` by zeroing its matrix, so the model it places shrinks to a
+    /// point. Everything else in the file stays as it is.
+    static void hideZoneRecord(QByteArray& zone, qsizetype recordOffset);
 
     std::size_t drawCount() const { return m_drawObjects.size(); }
     /// The render object that draw record `draw` places.

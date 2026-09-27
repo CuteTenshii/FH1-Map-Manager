@@ -22,6 +22,8 @@ endif()
 add_library(fh1core STATIC
     src/core/Activities.cpp
     src/core/Activities.h
+    src/core/ArchiveUpdate.cpp
+    src/core/ArchiveUpdate.h
     src/core/BigEndianCursor.h
     src/core/ForzaZip.cpp
     src/core/ForzaZip.h
@@ -40,6 +42,8 @@ add_library(fh1core STATIC
     src/core/MapData.h
     src/core/MapLoader.cpp
     src/core/MapLoader.h
+    src/core/ModelRemoval.cpp
+    src/core/ModelRemoval.h
     src/core/PvsFile.cpp
     src/core/PvsFile.h
     src/core/Races.cpp

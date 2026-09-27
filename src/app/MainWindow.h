@@ -3,6 +3,7 @@
 #include "ForzaZip.h"
 #include "GameInstall.h"
 #include "MapData.h"
+#include "ModelRemoval.h"
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
@@ -201,6 +202,11 @@ private:
     QStringList backedUpFiles() const;
     /// Puts the backed-up originals back in the output folder, after asking.
     void restoreOriginals();
+    /// Removes the selected model of the 3D world from the map, as an
+    /// undoable edit of the track's bin.zip.
+    void deleteModel();
+    /// The part name of model chunk `chunk`, or its file name.
+    QString modelName(std::uint32_t chunk) const;
     /// Adds deleting gameplay object `index`, alone and with its group, to
     /// `menu`.
     void addDeleteGameObjectActions(QMenu& menu, std::size_t index);
@@ -379,6 +385,18 @@ private:
         std::vector<fh1::Race> deleted;
     };
     QAction* m_deleteEventAction = nullptr;
+    /// The track's bin.zip as edited: the entries changed by removing
+    /// models, by entry index, and the world chunks those models are.
+    struct ArchiveEditState {
+        QHash<std::uint32_t, QByteArray> entries;
+        std::vector<bool> hidden;
+    };
+    ArchiveEditState m_archiveEdits;
+    /// The world index the hidden chunks refer to.
+    std::shared_ptr<const fh1::WorldIndex> m_archiveEditsIndex;
+    /// Where the zone files place each draw record, read on the first
+    /// model removal.
+    std::optional<fh1::ZoneRecordIndex> m_zoneRecords;
     QAction* m_restoreAction = nullptr;
     /// Map icons at the size the map draws them, by fh1::Feature::icon.
     QHash<QString, QPixmap> m_icons;

@@ -21,6 +21,10 @@ constexpr std::uint32_t kMaxZoneEntries = 1'000'000;
 /// 3 floats, 9 half floats and 16 zero bytes.
 constexpr qsizetype kRecordFixedBytes = 52;
 constexpr qsizetype kBlockTrailerBytes = 32;
+/// Where a transform record's matrix lies: after three half-float ranges
+/// and three floats of position, nine half floats.
+constexpr qsizetype kRecordRowsOffset = 18;
+constexpr qsizetype kRecordRowsBytes = 18;
 /// Name of the procedural sets that place models; other sets place grass,
 /// crowds, glows and lights with other layouts.
 const QLatin1String kModelSetName("Models_Ungrouped");
@@ -86,13 +90,21 @@ bool Placement::belongsToEvent(const QString& eventId) const
     return eventTag.size() == eventId.size() || eventTag.at(eventId.size()) == QLatin1Char('_');
 }
 
+void TrackPlacements::hideZoneRecord(QByteArray& zone, qsizetype recordOffset)
+{
+    const qsizetype rows = recordOffset + kRecordRowsOffset;
+    if (recordOffset >= 0 && rows + kRecordRowsBytes <= zone.size()) {
+        std::fill(zone.begin() + rows, zone.begin() + rows + kRecordRowsBytes, '\0');
+    }
+}
+
 bool Placement::belongsToRace(const QString& eventId, int routeId) const
 {
     return belongsToEvent(eventId) || std::find(eventRoutes.begin(), eventRoutes.end(), routeId) != eventRoutes.end();
 }
 
 std::optional<std::vector<std::pair<std::uint32_t, Placement>>> TrackPlacements::readZone(
-    const QByteArray& zone, QString* error)
+    const QByteArray& zone, QString* error, std::vector<qsizetype>* recordOffsets)
 {
     BigEndianCursor c(zone);
     const std::uint32_t drawCount = c.u32();
@@ -124,6 +136,9 @@ std::optional<std::vector<std::pair<std::uint32_t, Placement>>> TrackPlacements:
     for (std::uint32_t k = 0; k < recordCount; ++k) {
         if (!c.has(kRecordFixedBytes + 1)) {
             break;
+        }
+        if (recordOffsets != nullptr) {
+            recordOffsets->push_back(c.pos());
         }
         Placement placement;
         for (float& range : placement.ranges) {
@@ -265,6 +280,9 @@ std::optional<TrackPlacements> TrackPlacements::load(
               if (read.isModelSet) {
                   const QByteArray data = archive.read(zipEntry);
                   read.set = data.isNull() ? std::nullopt : readScatterSet(data);
+                  if (read.set) {
+                      read.set->entry = static_cast<std::uint32_t>(entry);
+                  }
               }
               return read;
           });

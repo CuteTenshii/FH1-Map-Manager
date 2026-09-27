@@ -105,6 +105,21 @@ std::array<float, 3> levelRanges(int levels, float firstSwitch, float secondSwit
 
 } // namespace
 
+void hideScatterInstance(QByteArray& set, qsizetype record)
+{
+    // The X, Y and Z axes are the record's first three float4s; their w
+    // values stay.
+    constexpr qsizetype kAxisBytes = 12;
+    constexpr qsizetype kAxisStride = 16;
+    if (record < 0 || record + 3 * kAxisStride > set.size()) {
+        return;
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        const qsizetype start = record + axis * kAxisStride;
+        std::fill(set.begin() + start, set.begin() + start + kAxisBytes, '\0');
+    }
+}
+
 std::optional<ScatterSet> readScatterSet(const QByteArray& data, QString* error)
 {
     Reader r(data);
@@ -216,6 +231,7 @@ std::optional<ScatterSet> readScatterSet(const QByteArray& data, QString* error)
             }
             ScatterSet::Instance instance;
             instance.mesh = group.mesh;
+            instance.record = record;
             instance.placement.position = r.vec3(record + kInstancePosition);
             // The axes form a proper rotation; placements map the model's
             // stored coordinates, whose Z axis points the other way.

@@ -51,6 +51,13 @@ struct WorldChunk {
     /// A placed copy from a procedural set (see ScatterSet) rather than a
     /// zone file's placement.
     bool scattered = false;
+    /// What places the chunk, for removing it: for a zone-placed prop, the
+    /// draw record whose zone transforms it uses (its own, or a neighbouring
+    /// level's); for a procedural copy, the set's archive entry and where
+    /// the copy's instance record starts in it. -1 when unknown.
+    std::int32_t sourceDraw = -1;
+    std::int32_t sourceEntry = -1;
+    qint64 sourceRecord = -1;
 
     /// Whether the chunk is drawn while the camera is in `zone`; -1 (outside
     /// every zone, or no zone data) draws it.

@@ -1,7 +1,9 @@
+#include "ArchiveUpdate.h"
 #include "EntityRenderer.h"
 #include "ForzaZip.h"
 #include "Loaders.h"
 #include "ModelPreview.h"
+#include "ModelRemoval.h"
 #include "RenderMesh.h"
 #include "ScatterSet.h"
 #include "TrackPlacements.h"
@@ -1235,6 +1237,40 @@ private slots:
         QVERIFY(unplaced.has_value());
         QCOMPARE(unplaced->placedCount(), 0);
         QCOMPARE(unplaced->localModelCount(), 3);
+
+        // Removing the event sign from the map takes both its levels, in
+        // every zone and every copy of a zone file that places them.
+        const auto eventSign = static_cast<std::uint32_t>(signs[2] - index->chunks().data());
+        QCOMPARE(fh1::placedModelChunks(*index, eventSign).size(), std::size_t{2});
+        const std::optional<fh1::ZoneRecordIndex> zones = fh1::ZoneRecordIndex::build(archive, &error);
+        QVERIFY2(zones.has_value(), qPrintable(error));
+        QHash<std::uint32_t, QByteArray> edited;
+        QVERIFY2(fh1::removePlacedModel(archive, *index, *zones, eventSign, edited, &error), qPrintable(error));
+        QCOMPARE(edited.size(), 3);
+        const QString updatedPath = dir.filePath(QStringLiteral("updated.zip"));
+        QVERIFY2(fh1::writeUpdatedArchive(archivePath, updatedPath, edited, &error), qPrintable(error));
+        fh1::ForzaZip updated;
+        QVERIFY2(updated.open(updatedPath), qPrintable(updated.errorString()));
+        QCOMPARE(updated.entries().size(), archive.entries().size());
+        for (std::uint32_t i = 0; i < updated.entries().size(); ++i) {
+            QCOMPARE(updated.entries()[i].name, archive.entries()[i].name);
+            const QByteArray data = updated.read(updated.entries()[i], &error);
+            QVERIFY2(!data.isNull(), qPrintable(error));
+            QCOMPARE(data, edited.contains(i) ? edited.value(i) : archive.read(archive.entries()[i]));
+        }
+        const std::optional<fh1::TrackPlacements> afterRemoval
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}, {}, {}, {}}, draws), updated, nullptr, &error);
+        QVERIFY2(afterRemoval.has_value(), qPrintable(error));
+        QCOMPARE(afterRemoval->placement(2)->position, b.position);
+        QCOMPARE(afterRemoval->placement(2)->rows, (std::array<float, 9>{}));
+        QCOMPARE(afterRemoval->placement(3)->rows, (std::array<float, 9>{}));
+        QCOMPARE(afterRemoval->placement(1)->rows, placements->placement(1)->rows);
+        // A world-space model is not a placed one.
+        const auto worldSpace = static_cast<std::uint32_t>(std::find_if(index->chunks().begin(), index->chunks().end(),
+                                                               [](const fh1::WorldChunk& c) { return !c.placed; })
+            - index->chunks().begin());
+        QVERIFY(fh1::placedModelChunks(*index, worldSpace).empty());
+        QVERIFY(!fh1::removePlacedModel(archive, *index, *zones, worldSpace, edited, &error));
     }
 
     void readsZoneGrid()

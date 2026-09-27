@@ -1,12 +1,14 @@
 // Checks against a real extracted Forza Horizon disc. Set FH1_GAME_DIR to the
 // disc folder (holding media) to run these; they are skipped otherwise.
 
+#include "ArchiveUpdate.h"
 #include "ForzaZip.h"
 #include "GameDatabase.h"
 #include "GameInstall.h"
 #include "GameObjects.h"
 #include "Loaders.h"
 #include "MapLoader.h"
+#include "ModelRemoval.h"
 #include "Races.h"
 #include "RenderMesh.h"
 #include "RouteEditing.h"
@@ -514,6 +516,60 @@ private slots:
         QCOMPARE(backdrop, 23);
         // Only a few hundred prop models are never placed.
         QVERIFY2(index->localModelCount() < 1000, qPrintable(QString::number(index->localModelCount())));
+
+        // Removing the marker pole zeroes the matrix of every zone record
+        // that places it, and of no other.
+        const auto poleChunk
+            = std::find_if(index->chunks().begin(), index->chunks().end(), [](const fh1::WorldChunk& c) {
+                  return c.placed && !c.scattered
+                      && (c.placement.position - QVector3D(-1670.525F, 12.5432F, -1207.935F)).length() < 0.01F;
+              });
+        QVERIFY(poleChunk != index->chunks().end());
+        const auto poleIndex = static_cast<std::uint32_t>(poleChunk - index->chunks().begin());
+        const std::optional<fh1::ZoneRecordIndex> records = fh1::ZoneRecordIndex::build(archive, &error);
+        QVERIFY2(records.has_value(), qPrintable(error));
+        QSet<std::int32_t> poleDraws;
+        for (const std::uint32_t c : fh1::placedModelChunks(*index, poleIndex)) {
+            poleDraws.insert(index->chunks()[c].sourceDraw);
+        }
+        QVERIFY(!poleDraws.isEmpty());
+        QHash<std::uint32_t, QByteArray> edited;
+        QVERIFY2(fh1::removePlacedModel(archive, *index, *records, poleIndex, edited, &error), qPrintable(error));
+        QVERIFY(!edited.isEmpty());
+        for (auto [entry, data] : edited.asKeyValueRange()) {
+            const auto before = fh1::TrackPlacements::readZone(archive.read(archive.entries()[entry]));
+            const auto after = fh1::TrackPlacements::readZone(data);
+            QVERIFY(before && after && before->size() == after->size());
+            for (std::size_t r = 0; r < after->size(); ++r) {
+                const bool poleRecord = poleDraws.contains(static_cast<std::int32_t>((*after)[r].first));
+                const bool zeroed = (*after)[r].second.rows == std::array<float, 9>{};
+                QCOMPARE(zeroed, poleRecord);
+                QCOMPARE((*after)[r].second.position, (*before)[r].second.position);
+            }
+        }
+    }
+
+    void archiveUpdateKeepsOtherEntries()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        const QString source = install.resolve(QStringLiteral("gamemodes.zip"));
+        fh1::ForzaZip original;
+        QVERIFY(original.open(source));
+        QTemporaryDir dir;
+        const QString target = dir.filePath(QStringLiteral("gamemodes.zip"));
+        QString error;
+        QByteArray changed = original.read(original.entries()[3]);
+        changed.append("<!-- edited -->");
+        QVERIFY2(fh1::writeUpdatedArchive(source, target, {{3, changed}}, &error), qPrintable(error));
+        fh1::ForzaZip updated;
+        QVERIFY2(updated.open(target), qPrintable(updated.errorString()));
+        QCOMPARE(updated.entries().size(), original.entries().size());
+        for (std::uint32_t i = 0; i < updated.entries().size(); ++i) {
+            const QByteArray data = updated.read(updated.entries()[i], &error);
+            QVERIFY2(!data.isNull(), qPrintable(error));
+            QCOMPARE(data, i == 3 ? changed : original.read(original.entries()[i]));
+        }
     }
 
     void textureTables()

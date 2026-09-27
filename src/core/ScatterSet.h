@@ -40,14 +40,23 @@ struct ScatterSet {
         /// Where the instance goes, with the distances at which the game
         /// switches between the mesh's levels and stops drawing it.
         Placement placement;
+        /// Where the instance's record starts in the set's file.
+        qsizetype record = -1;
     };
 
     QString name;
+    /// The set's entry in the track's archive (see ForzaZip::entries()).
+    std::uint32_t entry = 0;
     /// Draw record of each level of detail of each mesh, finest first; empty
     /// for meshes named by a source path.
     std::vector<std::vector<std::uint32_t>> meshDraws;
     std::vector<Instance> instances;
 };
+
+/// Hides the instance whose record starts at `record` in the set's file
+/// `set` by zeroing its axes, so the copy shrinks to a point. Everything
+/// else in the file stays as it is.
+void hideScatterInstance(QByteArray& set, qsizetype record);
 
 /// Parses a procedural placement set. Returns nothing, with `error` set, if
 /// the data does not have the layout ScatterSet documents.

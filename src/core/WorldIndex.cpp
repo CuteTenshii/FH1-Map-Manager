@@ -24,7 +24,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 14;
+constexpr quint32 kCacheVersion = 15;
 /// A zone record has at most 255 blocks of at most 255 route bytes.
 constexpr quint32 kMaxEventRoutes = 255 * 255;
 /// Models whose centre lies this close to the origin are in local space.
@@ -214,7 +214,8 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
         return it == models.cend() ? nullptr : &it.value();
     };
     QSet<std::uint32_t> placedObjects;
-    const auto addChunk = [&](const LocalModel& model, const Placement& placement, int lod, bool scattered) {
+    const auto addChunk
+        = [&](const LocalModel& model, const Placement& placement, int lod, bool scattered) -> WorldChunk& {
         WorldChunk chunk;
         chunk.scattered = scattered;
         chunk.entry = model.entry;
@@ -238,6 +239,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
             }
         }
         m_chunks.push_back(chunk);
+        return m_chunks.back();
     };
     const std::size_t draws = placements.drawCount();
     for (std::size_t d = 0; d < draws; ++d) {
@@ -248,6 +250,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
             continue;
         }
         const Placement* placement = placements.placement(d);
+        std::size_t source = d;
         if (placement == nullptr) {
             const QString key = rendermesh::lodGroupKey(model->header.firstPartName);
             for (int step = 1; step <= kNeighbourReach && placement == nullptr; ++step) {
@@ -262,6 +265,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
                         && !placements.isScatterTemplate(static_cast<std::size_t>(n))
                         && rendermesh::lodGroupKey(other->header.firstPartName) == key) {
                         placement = candidate;
+                        source = static_cast<std::size_t>(n);
                         break;
                     }
                 }
@@ -270,7 +274,8 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
         if (placement == nullptr) {
             continue;
         }
-        addChunk(*model, *placement, std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3), false);
+        addChunk(*model, *placement, std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3), false)
+            .sourceDraw = static_cast<std::int32_t>(source);
         placedObjects.insert(placements.drawObject(d));
     }
     // Copies placed by procedural sets. A mesh's levels are its template
@@ -281,7 +286,9 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
             const std::vector<std::uint32_t>& levels = set.meshDraws[instance.mesh];
             for (std::size_t level = 0; level < levels.size(); ++level) {
                 if (const LocalModel* model = modelOf(levels[level])) {
-                    addChunk(*model, instance.placement, static_cast<int>(level), true);
+                    WorldChunk& chunk = addChunk(*model, instance.placement, static_cast<int>(level), true);
+                    chunk.sourceEntry = static_cast<std::int32_t>(set.entry);
+                    chunk.sourceRecord = instance.record;
                     placedObjects.insert(placements.drawObject(levels[level]));
                 }
             }
@@ -439,6 +446,7 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
         }
         if (c.placed) {
             out << c.placement.position << c.placement.eventProp << c.placement.eventTag << c.scattered;
+            out << c.sourceDraw << c.sourceEntry << c.sourceRecord;
             out << static_cast<quint32>(c.placement.eventRoutes.size());
             for (const std::uint8_t route : c.placement.eventRoutes) {
                 out << route;
@@ -518,6 +526,7 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
         }
         if (c.placed) {
             in >> c.placement.position >> c.placement.eventProp >> c.placement.eventTag >> c.scattered;
+            in >> c.sourceDraw >> c.sourceEntry >> c.sourceRecord;
             quint32 routeCount = 0;
             in >> routeCount;
             if (in.status() != QDataStream::Ok || routeCount > kMaxEventRoutes) {
