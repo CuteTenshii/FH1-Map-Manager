@@ -27,6 +27,8 @@ add_library(fh1core STATIC
     src/core/ForzaZip.h
     src/core/GameDatabase.cpp
     src/core/GameDatabase.h
+    src/core/GameObjects.cpp
+    src/core/GameObjects.h
     src/core/GameInstall.cpp
     src/core/GameInstall.h
     src/core/Loaders.cpp

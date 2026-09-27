@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GameObjects.h"
 #include "MapCalibration.h"
 
 #include <QColor>
@@ -143,6 +144,10 @@ struct MapData {
     std::vector<Race> races;
     /// The routes the races run on.
     std::vector<RaceRoute> raceRoutes;
+    /// Ribbon_00/GameObjs.xml, whose objects are the "gameobjs" layer's
+    /// features in the same order; empty when the track has none or they
+    /// do not match up.
+    GameObjectsFile gameObjects;
     /// The in-game map's icons, keyed by its `activity_type` names.
     QHash<QString, QImage> icons;
     /// Non-fatal problems met while loading, e.g. a missing optional file.

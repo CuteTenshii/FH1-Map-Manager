@@ -1,4 +1,5 @@
 #include "GameInstall.h"
+#include "GameObjects.h"
 #include "Loaders.h"
 #include "MapCalibration.h"
 #include "MapLoader.h"
@@ -163,6 +164,28 @@ QByteArray checkpointRoute()
         "\t</NamedTransforms>\r\n"
         "\t<GameObjects/>\r\n"
         "</TrackRoute>\r\n");
+}
+
+/// A GameObjs.xml in the game's layout: three objects, CRLF line ends.
+QByteArray gameObjectsFile()
+{
+    QByteArray text = "<?xml version=\"1.0\" ?>\r\n<GameObjs>\r\n";
+    const char* const ids[] = {"FR04", "FR04_NODE", "SPEED_CAMERA_01"};
+    for (int i = 0; i < 3; ++i) {
+        text += QStringLiteral("\t<Obj%1 GameplayID=\"%2\">\r\n"
+                               "\t\t<Pos x=\"%3.000000\" y=\"10.500000\" z=\"-20.250000\"/>\r\n"
+                               "\t\t<Orientation>\r\n"
+                               "\t\t\t<XAxis x=\"1.000000\" y=\"0.000000\" z=\"0.000000\"/>\r\n"
+                               "\t\t\t<YAxis x=\"0.000000\" y=\"1.000000\" z=\"0.000000\"/>\r\n"
+                               "\t\t\t<ZAxis x=\"0.000000\" y=\"0.000000\" z=\"1.000000\"/>\r\n"
+                               "\t\t</Orientation>\r\n"
+                               "\t</Obj%1>\r\n")
+                    .arg(i)
+                    .arg(QLatin1String(ids[i]))
+                    .arg(i * 100)
+                    .toLatin1();
+    }
+    return text + "</GameObjs>\r\n";
 }
 
 fh1::RouteTransform routePoint(const QString& name, const QVector3D& position, const QVector3D& facing = {0, 0, 1})
@@ -525,6 +548,48 @@ private slots:
         QCOMPARE(readFile(backup), checkpointRoute());
         QCOMPARE(readFile(original), fh1::writeRaceRoute(route));
         QCOMPARE(QDir(QFileInfo(original).absolutePath()).entryList(QDir::Files), gameFiles);
+    }
+
+    void gameObjectsSaveWhatTheyRead()
+    {
+        const QByteArray original = gameObjectsFile();
+        fh1::GameObjectsFile file = fh1::readGameObjects(original, QStringLiteral("GameObjs.xml"));
+        QCOMPARE(file.objects.size(), std::size_t{3});
+        QCOMPARE(file.objects[1].element, QStringLiteral("Obj1"));
+        QCOMPARE(file.objects[1].gameplayId, QStringLiteral("FR04_NODE"));
+        QCOMPARE(file.objects[2].position, QVector3D(200.0F, 10.5F, -20.25F));
+        QCOMPARE(file.objects[0].axes[2], QVector3D(0.0F, 0.0F, 1.0F));
+        QCOMPARE(fh1::writeGameObjects(file), original);
+
+        // A moved object gets its new numbers in place; nothing else changes.
+        fh1::moveGameObject(file, 1, QVector3D(-3.5F, 12.0F, 7.125F));
+        QByteArray expected = original;
+        expected.replace("<Pos x=\"100.000000\" y=\"10.500000\" z=\"-20.250000\"/>",
+            "<Pos x=\"-3.500000\" y=\"12.000000\" z=\"7.125000\"/>");
+        QCOMPARE(fh1::writeGameObjects(file), expected);
+
+        // Turning to face east turns every axis about the vertical.
+        fh1::turnGameObject(file, 1, QVector3D(1.0F, 0.0F, 0.0F));
+        const fh1::GameObject& turned = file.objects[1];
+        QVERIFY((turned.axes[2] - QVector3D(1.0F, 0.0F, 0.0F)).length() < 1e-6F);
+        QVERIFY((turned.axes[0] - QVector3D(0.0F, 0.0F, -1.0F)).length() < 1e-6F);
+        QVERIFY((turned.axes[1] - QVector3D(0.0F, 1.0F, 0.0F)).length() < 1e-6F);
+
+        // Removing the first renumbers the others, which otherwise keep
+        // their text.
+        fh1::GameObjectsFile removed = fh1::readGameObjects(original, {});
+        fh1::removeGameObject(removed, 0);
+        const QByteArray written = fh1::writeGameObjects(removed);
+        QVERIFY(written.contains("\t<Obj0 GameplayID=\"FR04_NODE\">\r\n"));
+        QVERIFY(written.contains("\t</Obj0>\r\n\t<Obj1 GameplayID=\"SPEED_CAMERA_01\">"));
+        QVERIFY(!written.contains("Obj2"));
+        const fh1::GameObjectsFile reread = fh1::readGameObjects(written, {});
+        QCOMPARE(reread.objects.size(), std::size_t{2});
+        QCOMPARE(reread.objects[1].position, QVector3D(200.0F, 10.5F, -20.25F));
+
+        QVERIFY_THROWS_EXCEPTION(
+            fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0 GameplayID='A'></Obj0></GameObjs>", {}));
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0>", {}));
     }
 
     void transformKinds()

@@ -14,6 +14,8 @@
 #include <QImage>
 #include <QRegularExpression>
 
+#include <algorithm>
+
 namespace fh1 {
 
 namespace {
@@ -583,14 +585,34 @@ MapData MapLoader::load(const GameInstall& install, const QString& trackFolder, 
     loadRaces(ctx, racingLines);
 
     ctx.step(QStringLiteral("Reading gameplay objects"));
+    const QString gameObjectsPath = ctx.ribbonPath(QStringLiteral("GameObjs.xml"));
+    const QByteArray gameObjects = ctx.readMediaFile(gameObjectsPath);
     if (Layer* gameplay = ctx.addLayer([&] {
-            const QByteArray data = ctx.readMediaFile(ctx.ribbonPath(QStringLiteral("GameObjs.xml")));
-            return data.isNull()
+            return gameObjects.isNull()
                 ? Layer{}
-                : loaders::placements(data, QStringLiteral("gameobjs"), QStringLiteral("Gameplay objects"),
+                : loaders::placements(gameObjects, QStringLiteral("gameobjs"), QStringLiteral("Gameplay objects"),
                       QStringLiteral("Ribbon_00/GameObjs.xml"), QStringLiteral("GameplayID"));
         })) {
         enrichGameplayObjects(ctx, *gameplay);
+        // The same file again, kept for editing; its objects must line up
+        // with the layer's features one for one.
+        try {
+            GameObjectsFile file = readGameObjects(gameObjects, QStringLiteral("Ribbon_00/GameObjs.xml"));
+            const bool matches = file.objects.size() == gameplay->features.size()
+                && std::equal(file.objects.begin(), file.objects.end(), gameplay->features.begin(),
+                    [](const GameObject& object, const Feature& feature) {
+                        return object.position == feature.position;
+                    });
+            if (matches) {
+                file.mediaPath = QDir(install.mediaPath()).relativeFilePath(install.resolve(gameObjectsPath));
+                map.gameObjects = std::move(file);
+            } else {
+                ctx.warn(
+                    QStringLiteral("GameObjs.xml reads differently for editing; gameplay objects cannot be edited"));
+            }
+        } catch (const LoadError& e) {
+            ctx.warn(QString::fromStdString(e.what()));
+        }
     }
 
     return map;
