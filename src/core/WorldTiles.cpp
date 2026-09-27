@@ -38,7 +38,8 @@ bool EventPropFilter::includes(const WorldChunk& chunk) const
     return chunk.placement.belongsToRace(m_eventId, m_routeId);
 }
 
-WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, const EventPropFilter& eventProps)
+WorldTileGrid::WorldTileGrid(
+    const WorldIndex& index, float tileSize, const EventPropFilter& eventProps, const std::vector<bool>& hidden)
     : m_index(index)
 {
     const QRectF footprint = index.footprint();
@@ -46,9 +47,8 @@ WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, const Even
     std::map<std::pair<int, int>, std::size_t> tileByCell;
     for (std::uint32_t i = 0; i < chunks.size(); ++i) {
         const WorldChunk& chunk = chunks[i];
-        if (!eventProps.includes(chunk)) {
-            continue;
-        }
+        // Every chunk has a tile, so that changing the filters later only
+        // changes what the tiles draw.
         const QVector3D centre = (chunk.boundsMin + chunk.boundsMax) / 2.0F;
         const int cx = static_cast<int>(std::floor((centre.x() - footprint.left()) / tileSize));
         const int cz = static_cast<int>(std::floor((centre.z() - footprint.top()) / tileSize));
@@ -60,20 +60,43 @@ WorldTileGrid::WorldTileGrid(const WorldIndex& index, float tileSize, const Even
             m_tiles.push_back(std::move(tile));
         }
         Tile& tile = m_tiles[it->second];
-        tile.chunks.push_back(i);
+        tile.allChunks.push_back(i);
         tile.boundsMin = QVector3D(std::min(tile.boundsMin.x(), chunk.boundsMin.x()),
             std::min(tile.boundsMin.y(), chunk.boundsMin.y()), std::min(tile.boundsMin.z(), chunk.boundsMin.z()));
         tile.boundsMax = QVector3D(std::max(tile.boundsMax.x(), chunk.boundsMax.x()),
             std::max(tile.boundsMax.y(), chunk.boundsMax.y()), std::max(tile.boundsMax.z(), chunk.boundsMax.z()));
     }
-    for (Tile& tile : m_tiles) {
-        for (std::uint32_t c : tile.chunks) {
+    update(eventProps, hidden);
+}
+
+std::vector<int> WorldTileGrid::update(const EventPropFilter& eventProps, const std::vector<bool>& hidden)
+{
+    const auto& chunks = m_index.chunks();
+    std::vector<int> changed;
+    std::vector<std::uint32_t> drawn;
+    for (std::size_t t = 0; t < m_tiles.size(); ++t) {
+        Tile& tile = m_tiles[t];
+        drawn.clear();
+        for (const std::uint32_t c : tile.allChunks) {
+            if (eventProps.includes(chunks[c]) && !(c < hidden.size() && hidden[c])) {
+                drawn.push_back(c);
+            }
+        }
+        if (m_built && drawn == tile.chunks) {
+            continue;
+        }
+        tile.chunks = drawn;
+        tile.edges.clear();
+        for (const std::uint32_t c : tile.chunks) {
             tile.edges.push_back(chunks[c].bandStart);
             tile.edges.push_back(chunks[c].bandEnd);
         }
         std::sort(tile.edges.begin(), tile.edges.end());
         tile.edges.erase(std::unique(tile.edges.begin(), tile.edges.end()), tile.edges.end());
+        changed.push_back(static_cast<int>(t));
     }
+    m_built = true;
+    return changed;
 }
 
 float WorldTileGrid::distanceTo(const Tile& tile, float x, float z) const

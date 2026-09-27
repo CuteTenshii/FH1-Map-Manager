@@ -486,7 +486,7 @@ std::vector<TileRequest> WorldRenderer::requests(const WorldCamera& camera, cons
         }
         const int state = m_grid->stateAt(tiles[i], distance);
         const int inFlight = i < inFlightState.size() ? inFlightState[i] : -1;
-        if (m_tiles[i].state == state || inFlight >= 0) {
+        if ((m_tiles[i].state == state && !m_tiles[i].stale) || inFlight >= 0) {
             continue;
         }
         result.push_back({static_cast<int>(i), state, distance, m_grid->chunksAt(tiles[i], distance)});
@@ -504,11 +504,20 @@ bool WorldRenderer::isComplete(const WorldCamera& camera) const
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
         const float distance = m_grid->distanceTo(tiles[i], camera.position.x(), camera.position.z());
-        if (distance <= m_viewDistance * kStreamMargin && m_tiles[i].state != m_grid->stateAt(tiles[i], distance)) {
+        if (distance <= m_viewDistance * kStreamMargin
+            && (m_tiles[i].state != m_grid->stateAt(tiles[i], distance) || m_tiles[i].stale)) {
             return false;
         }
     }
     return true;
+}
+
+void WorldRenderer::invalidateTile(int tile)
+{
+    if (tile >= 0 && static_cast<std::size_t>(tile) < m_tiles.size()
+        && m_tiles[static_cast<std::size_t>(tile)].state >= 0) {
+        m_tiles[static_cast<std::size_t>(tile)].stale = true;
+    }
 }
 
 void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
@@ -526,6 +535,7 @@ void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
     GpuTile& gpu = m_tiles[static_cast<std::size_t>(tile)];
     releaseTile(gpu);
     gpu.state = state;
+    gpu.stale = false;
     gpu.batches = mesh.batches;
     gpu.models = mesh.models;
     if (mesh.indices.empty()) {

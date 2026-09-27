@@ -49,6 +49,9 @@ public:
     /// Which event props (see fh1::Placement::eventProp), which the game
     /// only shows during races and other events, to draw. None by default.
     void setEventPropFilter(const fh1::EventPropFilter& filter);
+    /// Leaves out the chunks `hidden` marks (indexed like the world's
+    /// chunks): models removed from the map.
+    void setHiddenChunks(std::vector<bool> hidden);
 
     /// Far limit of drawing and of the fog, in metres.
     void setViewDistance(float metres);
@@ -124,6 +127,8 @@ private:
     struct BuiltTile {
         int tile = -1;
         int state = -1;
+        /// The tile's version when the build started (see m_tileVersion).
+        quint64 version = 0;
         std::shared_ptr<fh1::TileMesh> mesh;
     };
     struct DecodedTexture {
@@ -148,6 +153,11 @@ private:
     WorldRenderer m_renderer;
     /// Per tile: the state being built on a worker thread, or -1.
     std::vector<int> m_inFlight;
+    /// Per tile: raised when its chunks change, so builds started before
+    /// are dropped.
+    std::vector<quint64> m_tileVersion;
+    /// Rebuilds only the tiles whose chunks the filters change.
+    void applyFilters();
     std::vector<BuiltTile> m_ready;
     int m_jobsInFlight = 0;
     std::vector<DecodedTexture> m_readyTextures;
@@ -157,6 +167,7 @@ private:
     QThreadPool m_pool;
     int m_failedChunks = 0;
     fh1::EventPropFilter m_eventPropFilter;
+    std::vector<bool> m_hiddenChunks;
     std::optional<std::uint32_t> m_highlightedModel;
 
     Camera m_camera;

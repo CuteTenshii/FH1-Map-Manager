@@ -129,6 +129,9 @@ public:
     qint64 uploadedTriangles() const { return m_uploadedTriangles; }
     int tileCount() const { return static_cast<int>(m_tiles.size()); }
     int loadedState(int tile) const { return m_tiles[static_cast<std::size_t>(tile)].state; }
+    /// Marks `tile` for building again, after the grid changed its chunks.
+    /// Its current mesh stays drawn until the new one is uploaded.
+    void invalidateTile(int tile);
 
 private:
     /// Fog distance as a fraction of the view distance.
@@ -142,6 +145,9 @@ private:
         std::vector<fh1::TileMesh::Batch> batches;
         std::vector<fh1::TileMesh::Model> models;
         int state = -1;
+        /// The tile's chunks changed since it was built; it is drawn as it
+        /// was until built again.
+        bool stale = false;
     };
 
     struct GpuTexture {

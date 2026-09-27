@@ -41,16 +41,25 @@ public:
         /// Union of the tile's chunk bounds.
         QVector3D boundsMin;
         QVector3D boundsMax;
-        /// Indices into WorldIndex::chunks().
+        /// Indices into WorldIndex::chunks(): the chunks drawn.
         std::vector<std::uint32_t> chunks;
+        /// Every chunk in the tile, drawn or left out by the filters.
+        std::vector<std::uint32_t> allChunks;
         /// Sorted, distinct band edges of the tile's chunks.
         std::vector<float> edges;
     };
 
-    /// Leaves out the event props that `eventProps` does not include.
-    WorldTileGrid(const WorldIndex& index, float tileSize, const EventPropFilter& eventProps = {});
+    /// Leaves out the event props that `eventProps` does not include, and
+    /// the chunks `hidden` marks (indexed like WorldIndex::chunks()).
+    WorldTileGrid(const WorldIndex& index, float tileSize, const EventPropFilter& eventProps = {},
+        const std::vector<bool>& hidden = {});
 
     const std::vector<Tile>& tiles() const { return m_tiles; }
+
+    /// Applies new filters: which event props to draw, and which chunks to
+    /// leave out. Returns the tiles whose chunks changed, which alone need
+    /// building again.
+    std::vector<int> update(const EventPropFilter& eventProps, const std::vector<bool>& hidden);
 
     /// Horizontal distance from `x`, `z` to the tile's bounds (0 inside).
     float distanceTo(const Tile& tile, float x, float z) const;
@@ -64,6 +73,8 @@ public:
 private:
     const WorldIndex& m_index;
     std::vector<Tile> m_tiles;
+    /// Set once the constructor has filled in every tile.
+    bool m_built = false;
 };
 
 /// Geometry of one tile state, ready for upload: interleaved position

@@ -1187,6 +1187,29 @@ private slots:
         QCOMPARE(gridChunks(fh1::EventPropFilter::race(QStringLiteral("FR10"), 151)), std::size_t{6});
         QCOMPARE(gridChunks(fh1::EventPropFilter::race(QStringLiteral("FR10"), 12)), std::size_t{4});
 
+        // Changing the filters changes only the tiles holding the chunks
+        // concerned, so the view rebuilds those alone.
+        fh1::WorldTileGrid grid(*index, 100.0F);
+        const auto signChunk = static_cast<std::uint32_t>(signs[0] - index->chunks().data());
+        int signTile = -1;
+        std::size_t drawnBefore = 0;
+        for (std::size_t t = 0; t < grid.tiles().size(); ++t) {
+            const auto& all = grid.tiles()[t].allChunks;
+            if (std::find(all.begin(), all.end(), signChunk) != all.end()) {
+                signTile = static_cast<int>(t);
+                drawnBefore = grid.tiles()[t].chunks.size();
+            }
+        }
+        QVERIFY(signTile >= 0);
+        QVERIFY(grid.tiles().size() > 1);
+        std::vector<bool> hidden(index->chunks().size(), false);
+        hidden[signChunk] = true;
+        QCOMPARE(grid.update({}, hidden), std::vector<int>{signTile});
+        QCOMPARE(grid.tiles()[static_cast<std::size_t>(signTile)].chunks.size(), drawnBefore - 1);
+        QVERIFY(grid.update({}, hidden).empty());
+        const std::vector<int> withEventProps = grid.update(fh1::EventPropFilter::all(), hidden);
+        QVERIFY(!withEventProps.empty() && withEventProps.size() < grid.tiles().size());
+
         // Tile building places the sign's vertices.
         const auto signIndex = static_cast<std::uint32_t>(signs[0] - index->chunks().data());
         const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, {signIndex});

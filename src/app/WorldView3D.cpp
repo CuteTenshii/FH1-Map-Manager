@@ -13,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -74,8 +75,9 @@ void WorldView3D::setWorld(std::shared_ptr<const fh1::ForzaZip> archive, std::sh
     m_archive = std::move(archive);
     m_index = std::move(index);
     m_textures = std::move(textures);
-    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize, m_eventPropFilter);
+    m_grid = std::make_unique<fh1::WorldTileGrid>(*m_index, kTileSize, m_eventPropFilter, m_hiddenChunks);
     m_inFlight.assign(m_grid->tiles().size(), -1);
+    m_tileVersion.assign(m_grid->tiles().size(), 0);
     if (m_renderer.isReady()) {
         makeCurrent();
     }
@@ -95,10 +97,32 @@ void WorldView3D::setEventPropFilter(const fh1::EventPropFilter& filter)
         return;
     }
     m_eventPropFilter = filter;
-    // The tile grid decides which chunks exist, so the world is reloaded
-    // with a new one; the camera stays where it is.
-    if (hasWorld()) {
-        setWorld(m_archive, m_index, m_textures);
+    applyFilters();
+}
+
+void WorldView3D::applyFilters()
+{
+    if (!m_grid) {
+        return;
+    }
+    for (const int tile : m_grid->update(m_eventPropFilter, m_hiddenChunks)) {
+        ++m_tileVersion[static_cast<std::size_t>(tile)];
+        m_renderer.invalidateTile(tile);
+    }
+    m_wasSettled = false;
+    requestTiles();
+    update();
+}
+
+void WorldView3D::setHiddenChunks(std::vector<bool> hidden)
+{
+    if (hidden == m_hiddenChunks) {
+        return;
+    }
+    m_hiddenChunks = std::move(hidden);
+    applyFilters();
+    if (m_highlightedModel && *m_highlightedModel < m_hiddenChunks.size() && m_hiddenChunks[*m_highlightedModel]) {
+        setHighlightedModel(std::nullopt);
     }
 }
 
@@ -301,17 +325,18 @@ void WorldView3D::requestTiles()
         std::shared_ptr<const fh1::TrackTextures> textures = m_textures;
         const int tile = request.tile;
         const int state = request.state;
+        const quint64 version = m_tileVersion[static_cast<std::size_t>(tile)];
         m_pool.start(
-            [self, archive, index, textures, chunks = std::move(request.chunks), tile, state, epoch] {
+            [self, archive, index, textures, chunks = std::move(request.chunks), tile, state, version, epoch] {
                 auto mesh
                     = std::make_shared<fh1::TileMesh>(fh1::buildTileMesh(*archive, *index, chunks, textures.get()));
                 QMetaObject::invokeMethod(
                     qApp,
-                    [self, mesh, tile, state, epoch] {
+                    [self, mesh, tile, state, version, epoch] {
                         if (!self || self->m_epoch != epoch) {
                             return;
                         }
-                        self->m_ready.push_back({tile, state, mesh});
+                        self->m_ready.push_back({tile, state, version, mesh});
                         --self->m_jobsInFlight;
                         self->update();
                     },
@@ -382,6 +407,11 @@ void WorldView3D::paintGL()
             const BuiltTile built = std::move(m_ready.front());
             m_ready.erase(m_ready.begin());
             m_inFlight[static_cast<std::size_t>(built.tile)] = -1;
+            // Built from chunks the filters have since changed.
+            if (built.version != m_tileVersion[static_cast<std::size_t>(built.tile)]) {
+                ++uploads;
+                continue;
+            }
             m_failedChunks += built.mesh->failedChunks;
             m_renderer.upload(built.tile, built.state, *built.mesh);
             ++uploads;
