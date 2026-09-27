@@ -91,6 +91,29 @@ void addCopyAction(QTableView* view, int keyColumn)
     view->setContextMenuPolicy(Qt::ActionsContextMenu);
 }
 
+/// A right-click menu for a list of files: `showText` opens the current
+/// item as a double-click does, and Copy copies its text.
+void addListActions(QListWidget* list, const QString& showText)
+{
+    auto* show = new QAction(showText, list);
+    QObject::connect(show, &QAction::triggered, list, [list] {
+        if (QListWidgetItem* item = list->currentItem()) {
+            emit list->itemActivated(item);
+        }
+    });
+    auto* copy = new QAction(QObject::tr("Copy"), list);
+    copy->setShortcut(QKeySequence::Copy);
+    copy->setShortcutContext(Qt::WidgetShortcut);
+    QObject::connect(copy, &QAction::triggered, list, [list] {
+        if (const QListWidgetItem* item = list->currentItem()) {
+            QApplication::clipboard()->setText(item->text());
+        }
+    });
+    list->addAction(show);
+    list->addAction(copy);
+    list->setContextMenuPolicy(Qt::ActionsContextMenu);
+}
+
 QTableView* makeTable(QAbstractItemModel* model)
 {
     auto* view = new QTableView;
@@ -475,6 +498,7 @@ void WorldDebugPanel::buildModelsTab(QWidget* page)
     m_modelTextures->setMaximumHeight(m_modelTextures->fontMetrics().height() * 4 + 8);
     connect(m_modelTextures, &QListWidget::itemActivated, this,
         [this](QListWidgetItem* item) { showTexture(item->data(kKeyRole).toUInt()); });
+    addListActions(m_modelTextures, tr("Show Texture"));
 
     auto* details = new QWidget;
     auto* detailsLayout = new QVBoxLayout(details);
@@ -561,6 +585,7 @@ void WorldDebugPanel::buildTexturesTab(QWidget* page)
     m_textureUsers->setMaximumHeight(m_textureUsers->fontMetrics().height() * 4 + 8);
     connect(m_textureUsers, &QListWidget::itemActivated, this,
         [this](QListWidgetItem* item) { showModel(item->data(kKeyRole).toUInt()); });
+    addListActions(m_textureUsers, tr("Show Model"));
 
     auto* details = new QWidget;
     auto* detailsLayout = new QVBoxLayout(details);
