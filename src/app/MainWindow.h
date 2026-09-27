@@ -38,10 +38,12 @@ class QLineEdit;
 class QMenu;
 class QProgressBar;
 class QSortFilterProxyModel;
+class QSpinBox;
 class QStackedWidget;
 class QTableView;
 class QTableWidget;
 class QTimer;
+class QToolBar;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -257,6 +259,13 @@ private:
     /// Switches the central area between the 2D map and the 3D world.
     void showWorld3D(bool show);
     void updateCentralPage();
+    /// Zooms the view shown, the 2D map or the 3D world, by `factor`.
+    void zoomBy(double factor);
+    /// Fits the view shown to the map: all of the 2D map, or the 3D world
+    /// from straight above the area the map covers.
+    void fitView();
+    /// Fills the toolbars at the top of the 2D map and of the 3D world.
+    void createViewToolbars();
     /// Starts loading the current track's 3D world if it is not loaded yet.
     void ensureWorld();
     void onWorldLoaded();
@@ -299,6 +308,12 @@ private:
     QStackedWidget* m_stack = nullptr;
     QLabel* m_noDataLabel = nullptr;
     MapView* m_view = nullptr;
+    /// The 2D map and the 3D world, each under a toolbar of its own.
+    QWidget* m_mapPage = nullptr;
+    QWidget* m_worldPage = nullptr;
+    QToolBar* m_mapToolbar = nullptr;
+    QToolBar* m_worldToolbar = nullptr;
+    QSpinBox* m_speedBox = nullptr;
     QGraphicsScene* m_scene = nullptr;
     BackgroundItem* m_background = nullptr;
     std::vector<LayerItem*> m_layerItems;

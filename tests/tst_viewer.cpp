@@ -38,11 +38,14 @@
 #include <QTest>
 #include <QThread>
 #include <QTimer>
+#include <QToolBar>
 #include <QTreeWidget>
+#include <QtMath>
 
 #include <array>
 #include <functional>
 #include <map>
+#include <numbers>
 
 namespace {
 
@@ -578,6 +581,23 @@ private slots:
         // The title names the open game folder, not its media folder.
         QCOMPARE(window.windowTitle(),
             QStringLiteral("testbed[*] - %1 - FH1 Map Viewer").arg(QDir::toNativeSeparators(disc)));
+        // Each view has its toolbar; zooming works in both, labels and map
+        // editing only on the map.
+        auto* mapToolbar = window.findChild<QToolBar*>(QStringLiteral("mapViewToolbar"));
+        auto* worldToolbar = window.findChild<QToolBar*>(QStringLiteral("worldViewToolbar"));
+        QVERIFY(mapToolbar != nullptr && worldToolbar != nullptr);
+        QVERIFY(mapToolbar->isVisible() && !worldToolbar->isVisible());
+        actions[QStringLiteral("3D World")]->trigger();
+        QVERIFY(!mapToolbar->isVisible() && worldToolbar->isVisible());
+        for (const QString& name : {QStringLiteral("Zoom In"), QStringLiteral("Zoom Out"), QStringLiteral("Fit Map")}) {
+            QVERIFY2(actions[name]->isVisible() && actions[name]->isEnabled(), qPrintable(name));
+        }
+        QVERIFY(!actions[QStringLiteral("Show Labels")]->isEnabled());
+        QVERIFY(!actions[QStringLiteral("Edit on Map")]->isEnabled());
+        actions[QStringLiteral("2D Map")]->trigger();
+        QVERIFY(mapToolbar->isVisible() && !worldToolbar->isVisible());
+        QVERIFY(actions[QStringLiteral("Show Labels")]->isEnabled());
+        QVERIFY(actions[QStringLiteral("Edit on Map")]->isEnabled());
         actions[QStringLiteral("Edit on Map")]->setChecked(true);
         const QPoint flyer = view->mapFromScene(QPointF(-50.0, 0.0));
         QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, flyer);
@@ -676,6 +696,42 @@ private slots:
             }
             delete widget;
         }
+    }
+
+    void worldZoomsAndFits()
+    {
+        WorldView3D world;
+        world.resize(1600, 1000);
+        WorldView3D::Camera camera;
+        camera.position = QVector3D(0.0F, 100.0F, 0.0F);
+        camera.pitch = -1.0F;
+        world.setCamera(camera);
+        // Zooming in moves along the view, out moves back the same way.
+        world.zoomBy(1.5F);
+        const QVector3D in = world.camera().position;
+        QVERIFY(in.y() < 100.0F);
+        QVERIFY(QVector3D::dotProduct(in - camera.position, camera.forward()) > 0.0F);
+        world.zoomBy(1.0F / 1.5F);
+        QVERIFY(world.camera().position.y() > in.y());
+
+        // Fitting 10 by 6 km looks straight down, north up, from above its
+        // centre, high enough for its width at this aspect ratio.
+        world.fitArea(QRectF(QPointF(-5000.0, 1000.0), QPointF(5000.0, 7000.0)));
+        const WorldView3D::Camera fitted = world.camera();
+        QCOMPARE(fitted.position.x(), 0.0F);
+        QCOMPARE(fitted.position.z(), 4000.0F);
+        QVERIFY(fitted.pitch < -1.5F);
+        QVERIFY(std::abs(fitted.yaw - std::numbers::pi_v<float> / 2.0F) < 1e-5F);
+        const float tanHalf = std::tan(qDegreesToRadians(WorldRenderer::kFieldOfViewDegrees) / 2.0F);
+        const float needed = 5000.0F / (tanHalf * 1.6F);
+        QVERIFY2(fitted.position.y() >= needed && fitted.position.y() < needed * 1.1F,
+            qPrintable(QString::number(fitted.position.y())));
+
+        // The speed stays within its range.
+        QSignalSpy speed(&world, &WorldView3D::speedChanged);
+        world.setSpeed(1e6F);
+        QCOMPARE(world.speed(), WorldView3D::kMaxSpeed);
+        QCOMPARE(speed.count(), 1);
     }
 
     void workRunsBehindAProgressDialog()

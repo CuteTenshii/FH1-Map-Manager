@@ -8,11 +8,13 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QWheelEvent>
+#include <QtMath>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <utility>
 
 namespace {
@@ -20,6 +22,13 @@ namespace {
 constexpr float kTileSize = 500.0F;
 constexpr float kMouseRadiansPerPixel = 0.0035F;
 constexpr float kFastMultiplier = 5.0F;
+/// Zooming looks this far ahead at least, and along views close to level,
+/// where the ground ahead is far or missing, no further than the clearance
+/// over this sine of the pitch.
+constexpr float kMinZoomDistance = 30.0F;
+constexpr float kShallowestZoomSine = 0.25F;
+/// Fitting an area leaves this much room around it.
+constexpr float kFitMargin = 1.05F;
 constexpr int kUploadsPerFrame = 4;
 constexpr int kTextureUploadsPerFrame = 24;
 /// Below every tile job (whose priority is minus its distance), so geometry
@@ -202,6 +211,50 @@ void WorldView3D::lookFromAbove(float x, float z, float height)
     Camera camera = m_camera;
     camera.position = QVector3D(x, ground + height, z);
     setCamera(camera);
+}
+
+void WorldView3D::zoomBy(float factor)
+{
+    if (factor <= 0.0F) {
+        return;
+    }
+    // What the camera looks at: the ground along its view, as far as its
+    // clearance tells.
+    const float down = std::sin(-m_camera.pitch);
+    const float distance
+        = std::max(kMinZoomDistance, m_renderer.clearance(m_camera) / std::max(down, kShallowestZoomSine));
+    Camera camera = m_camera;
+    camera.position += m_camera.forward() * (distance * (1.0F - 1.0F / factor));
+    setCamera(camera);
+}
+
+void WorldView3D::fitArea(const QRectF& xz)
+{
+    if (xz.isEmpty()) {
+        return;
+    }
+    const float aspect = height() > 0 ? static_cast<float>(width()) / static_cast<float>(height()) : 1.0F;
+    const float tanHalf = std::tan(qDegreesToRadians(WorldRenderer::kFieldOfViewDegrees) / 2.0F);
+    const float altitude = kFitMargin
+        * std::max(static_cast<float>(xz.height()) / 2.0F / tanHalf,
+            static_cast<float>(xz.width()) / 2.0F / (tanHalf * aspect));
+    Camera camera = m_camera;
+    camera.yaw = std::numbers::pi_v<float> / 2.0F;
+    camera.pitch = -std::numbers::pi_v<float> / 2.0F;
+    setCamera(camera);
+    const QPointF centre = xz.center();
+    lookFromAbove(static_cast<float>(centre.x()), static_cast<float>(centre.y()), altitude);
+}
+
+void WorldView3D::setSpeed(float metresPerSecond)
+{
+    const float speed = std::clamp(metresPerSecond, kMinSpeed, kMaxSpeed);
+    if (speed == m_speed) {
+        return;
+    }
+    m_speed = speed;
+    emit speedChanged(m_speed);
+    update();
 }
 
 void WorldView3D::setViewDistance(float metres)
@@ -706,8 +759,7 @@ void WorldView3D::wheelEvent(QWheelEvent* event)
 {
     const int steps = event->angleDelta().y() / 120;
     if (steps != 0) {
-        m_speed = std::clamp(m_speed * std::pow(1.25F, static_cast<float>(steps)), 5.0F, 2000.0F);
-        update();
+        setSpeed(m_speed * std::pow(1.25F, static_cast<float>(steps)));
     }
     event->accept();
 }

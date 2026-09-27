@@ -244,12 +244,28 @@ MainWindow::MainWindow(QWidget* parent)
     m_noDataLabel->setWordWrap(true);
     m_noDataLabel->setMargin(24);
 
+    m_world3D = new WorldView3D;
+    const auto viewPage = [](QToolBar* toolbar, QWidget* view) {
+        auto* page = new QWidget;
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        layout->addWidget(toolbar);
+        layout->addWidget(view, 1);
+        return page;
+    };
+    m_mapToolbar = new QToolBar(tr("Map Tools"));
+    m_mapToolbar->setObjectName(QStringLiteral("mapViewToolbar"));
+    m_mapPage = viewPage(m_mapToolbar, m_view);
+    m_worldToolbar = new QToolBar(tr("World Tools"));
+    m_worldToolbar->setObjectName(QStringLiteral("worldViewToolbar"));
+    m_worldPage = viewPage(m_worldToolbar, m_world3D);
+
     m_stack = new QStackedWidget;
     m_stack->addWidget(emptyPage);
-    m_stack->addWidget(m_view);
+    m_stack->addWidget(m_mapPage);
     m_stack->addWidget(m_noDataLabel);
-    m_world3D = new WorldView3D;
-    m_stack->addWidget(m_world3D);
+    m_stack->addWidget(m_worldPage);
     setCentralWidget(m_stack);
     connect(&m_worldWatcher, &QFutureWatcher<WorldLoad>::finished, this, &MainWindow::onWorldLoaded);
     connect(m_world3D, &WorldView3D::entityClicked, this,
@@ -259,6 +275,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_edits = new EditSession(this);
     createActions();
+    createViewToolbars();
     createDocks();
     createStatusBar();
     connect(m_edits, &EditSession::modifiedChanged, this, &MainWindow::onEditsChanged);
@@ -384,11 +401,12 @@ void MainWindow::createActions()
     m_editRaceAction->setToolTip(tr("Change the selected race's laps, opponents, prize, car class and start time"));
 
     m_viewMenu = menuBar()->addMenu(tr("&View"));
-    m_zoomInAction = m_viewMenu->addAction(tr("Zoom &In"), this, [this] { m_view->zoomBy(1.5); });
+    m_zoomInAction = m_viewMenu->addAction(tr("Zoom &In"), this, [this] { zoomBy(1.5); });
     m_zoomInAction->setShortcuts({QKeySequence::ZoomIn, QKeySequence(Qt::CTRL | Qt::Key_Equal)});
-    m_zoomOutAction = m_viewMenu->addAction(tr("Zoom &Out"), this, [this] { m_view->zoomBy(1.0 / 1.5); });
+    m_zoomOutAction = m_viewMenu->addAction(tr("Zoom &Out"), this, [this] { zoomBy(1.0 / 1.5); });
     m_zoomOutAction->setShortcut(QKeySequence::ZoomOut);
-    m_fitAction = m_viewMenu->addAction(tr("&Fit Map"), this, [this] { m_view->fitScene(); });
+    m_fitAction = m_viewMenu->addAction(tr("&Fit Map"), this, &MainWindow::fitView);
+    m_fitAction->setToolTip(tr("Show the whole map; in the 3D world, from straight above"));
     m_fitAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     m_viewMenu->addSeparator();
     m_findAction = m_viewMenu->addAction(tr("Find &Object"), this, [this] {
@@ -456,14 +474,42 @@ void MainWindow::createActions()
     connect(m_trackCombo, &QComboBox::activated, this, [this](int index) { loadTrack(m_trackCombo->itemText(index)); });
     toolbar->addWidget(m_trackCombo);
     toolbar->addSeparator();
-    toolbar->addAction(m_zoomInAction);
-    toolbar->addAction(m_zoomOutAction);
-    toolbar->addAction(m_fitAction);
-    toolbar->addSeparator();
     toolbar->addAction(m_view2DAction);
     toolbar->addAction(m_view3DAction);
     toolbar->addSeparator();
     toolbar->addAction(m_exportAction);
+}
+
+void MainWindow::createViewToolbars()
+{
+    m_mapToolbar->addAction(m_zoomInAction);
+    m_mapToolbar->addAction(m_zoomOutAction);
+    m_mapToolbar->addAction(m_fitAction);
+    m_mapToolbar->addSeparator();
+    m_mapToolbar->addAction(m_labelsAction);
+    m_mapToolbar->addAction(m_editMapAction);
+
+    m_worldToolbar->addAction(m_zoomInAction);
+    m_worldToolbar->addAction(m_zoomOutAction);
+    m_worldToolbar->addAction(m_fitAction);
+    m_worldToolbar->addSeparator();
+    m_worldToolbar->addWidget(new QLabel(tr("Speed ")));
+    m_speedBox = new QSpinBox;
+    m_speedBox->setRange(static_cast<int>(WorldView3D::kMinSpeed), static_cast<int>(WorldView3D::kMaxSpeed));
+    m_speedBox->setSuffix(tr(" m/s"));
+    m_speedBox->setKeyboardTracking(false);
+    m_speedBox->setValue(static_cast<int>(std::lround(m_world3D->speed())));
+    m_speedBox->setToolTip(tr("How fast W A S D fly, five times faster with Shift; the mouse wheel over the world "
+                              "changes it too"));
+    connect(m_speedBox, &QSpinBox::valueChanged, this,
+        [this](int metresPerSecond) { m_world3D->setSpeed(static_cast<float>(metresPerSecond)); });
+    // Back to flying once a speed is typed in.
+    connect(m_speedBox, &QSpinBox::editingFinished, m_world3D, qOverload<>(&QWidget::setFocus));
+    connect(m_world3D, &WorldView3D::speedChanged, this, [this](float metresPerSecond) {
+        const QSignalBlocker blocker(m_speedBox);
+        m_speedBox->setValue(static_cast<int>(std::lround(metresPerSecond)));
+    });
+    m_worldToolbar->addWidget(m_speedBox);
 }
 
 void MainWindow::createDocks()
@@ -815,7 +861,7 @@ int MainWindow::selectedRoute() const
 void MainWindow::updateEditActions()
 {
     const bool canEditMap = m_map && (selectedRoute() >= 0 || gameObjectsLayer() >= 0);
-    m_editMapAction->setEnabled(canEditMap);
+    m_editMapAction->setEnabled(canEditMap && !m_showWorld3D);
     if (!canEditMap && m_editMapAction->isChecked()) {
         m_editMapAction->setChecked(false);
     }
@@ -3219,12 +3265,36 @@ void MainWindow::updateCentralPage()
     if (!m_map) {
         m_stack->setCurrentIndex(0);
     } else if (m_showWorld3D) {
-        m_stack->setCurrentWidget(m_world3D);
+        m_stack->setCurrentWidget(m_worldPage);
     } else if (m_map->layers.empty() && m_background == nullptr) {
         m_stack->setCurrentWidget(m_noDataLabel);
     } else {
-        m_stack->setCurrentWidget(m_view);
+        m_stack->setCurrentWidget(m_mapPage);
     }
+}
+
+void MainWindow::zoomBy(double factor)
+{
+    if (m_showWorld3D) {
+        m_world3D->zoomBy(static_cast<float>(factor));
+    } else {
+        m_view->zoomBy(factor);
+    }
+}
+
+void MainWindow::fitView()
+{
+    if (!m_showWorld3D) {
+        m_view->fitScene();
+        return;
+    }
+    if (!m_map || m_view->sceneRect().isEmpty()) {
+        return;
+    }
+    const QRectF scene = m_view->sceneRect();
+    const QPointF a = m_map->calibration.imageToWorld(scene.topLeft());
+    const QPointF b = m_map->calibration.imageToWorld(scene.bottomRight());
+    m_world3D->fitArea(QRectF(a, b).normalized());
 }
 
 void MainWindow::showWorld3D(bool show)
@@ -3232,6 +3302,9 @@ void MainWindow::showWorld3D(bool show)
     m_showWorld3D = show;
     (show ? m_view3DAction : m_view2DAction)->setChecked(true);
     updateCentralPage();
+    // Labels and map editing are the 2D map's.
+    m_labelsAction->setEnabled(!show);
+    updateEditActions();
     if (show) {
         ensureWorld();
         m_world3D->setFocus();

@@ -30,6 +30,9 @@ class WorldView3D : public QOpenGLWidget {
 
 public:
     using Camera = WorldCamera;
+    /// Range of the flying speed, in metres per second.
+    static constexpr float kMinSpeed = 5.0F;
+    static constexpr float kMaxSpeed = 2000.0F;
 
     explicit WorldView3D(QWidget* parent = nullptr);
     ~WorldView3D() override;
@@ -45,6 +48,16 @@ public:
     /// Places the camera `height` metres above the geometry at `x`, `z`,
     /// keeping its heading and pitch.
     void lookFromAbove(float x, float z, float height);
+    /// Moves the camera along its view so that the distance to what it
+    /// looks at shrinks by `factor` (below 1 backs away): the 3D
+    /// counterpart of zooming the map.
+    void zoomBy(float factor);
+    /// Looks straight down, north up, from high enough to see all of the
+    /// area `xz` (x = world X, y = world Z).
+    void fitArea(const QRectF& xz);
+    /// Metres per second the camera flies at without Shift.
+    float speed() const { return m_speed; }
+    void setSpeed(float metresPerSecond);
 
     /// Which event props (see fh1::Placement::eventProp), which the game
     /// only shows during races and other events, to draw. None by default.
@@ -101,6 +114,9 @@ public:
 signals:
     /// Emitted when the view becomes settled (see isSettled()).
     void settled();
+    /// Emitted when the flying speed changes, by the mouse wheel or
+    /// setSpeed().
+    void speedChanged(float metresPerSecond);
     /// Emitted when a click (not a drag) lands on a shown map feature, or on
     /// none.
     void entityClicked(int layer, int feature);
