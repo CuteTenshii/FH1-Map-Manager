@@ -92,6 +92,13 @@ struct TestPart {
     QList<QPair<quint16, quint16>> texcoords;
     QList<TestMaterial> materials;
     quint32 stride = 16;
+    /// Raw second and third texture coordinate pairs, written at bytes 20
+    /// and 24 of each vertex when the stride has room for them.
+    QList<QPair<quint16, quint16>> texcoords1;
+    QList<QPair<quint16, quint16>> texcoords2;
+    /// Vertex colours (big-endian), written at byte `colourByte`.
+    QList<quint32> colours;
+    int colourByte = 24;
 };
 
 /// An entry of the material table after the parts.
@@ -99,6 +106,10 @@ struct TestMaterialInfo {
     quint32 shader = 0;
     /// -1 is written as an engine-supplied slot.
     QList<int> textureSlots;
+    /// The material's shader constants; one of zeros when empty. The
+    /// initializer keeps GCC's missing-initializer warning quiet where test
+    /// data brace-initialises only the first members.
+    QList<QVector4D> constants = {}; // NOLINT(readability-redundant-member-init)
 };
 
 /// The material table and shader list after the parts; without one the
@@ -163,6 +174,17 @@ QByteArray renderModel(const QList<TestPart>& parts, const std::optional<TestTai
                 qToBigEndian(part.texcoords[v].first, rest.data() + 4);
                 qToBigEndian(part.texcoords[v].second, rest.data() + 6);
             }
+            if (v < part.texcoords1.size() && part.stride >= 24) {
+                qToBigEndian(part.texcoords1[v].first, rest.data() + 8);
+                qToBigEndian(part.texcoords1[v].second, rest.data() + 10);
+            }
+            if (v < part.texcoords2.size() && part.stride >= 28) {
+                qToBigEndian(part.texcoords2[v].first, rest.data() + 12);
+                qToBigEndian(part.texcoords2[v].second, rest.data() + 14);
+            }
+            if (v < part.colours.size() && part.colourByte + 4 <= static_cast<int>(part.stride)) {
+                qToBigEndian(part.colours[v], rest.data() + part.colourByte - 12);
+            }
             d.append(rest);
         }
         be32(d, 1);
@@ -211,8 +233,17 @@ QByteArray renderModel(const QList<TestPart>& parts, const std::optional<TestTai
         be32(d, 1);
         be32(d, 0);
         be32(d, 1);
-        be32(d, 1);
-        d.append(QByteArray(16, '\0'));
+        if (info.constants.isEmpty()) {
+            be32(d, 1);
+            d.append(QByteArray(16, '\0'));
+        } else {
+            be32(d, static_cast<quint32>(info.constants.size()));
+            for (const QVector4D& c : info.constants) {
+                for (int k = 0; k < 4; ++k) {
+                    beFloat(d, c[k]);
+                }
+            }
+        }
         be32(d, 1);
         be32(d, static_cast<quint32>(info.textureSlots.size()));
         for (int slot : info.textureSlots) {
@@ -231,7 +262,7 @@ QByteArray renderModel(const QList<TestPart>& parts, const std::optional<TestTai
 }
 
 /// A compiled shader whose vertex inputs are `inputs` (see readShaderLayout).
-QByteArray shaderObject(const QList<quint32>& inputs)
+QByteArray shaderObject(const QList<quint32>& inputs, const QList<QPair<int, QString>>& samplers = {})
 {
     QByteArray d("constant table", 14);
     d.append("vs_3_0", 7);
@@ -246,6 +277,42 @@ QByteArray shaderObject(const QList<quint32>& inputs)
         be32(d, input);
     }
     be32(d, 0x7030); // the first output ends the inputs
+    if (samplers.isEmpty()) {
+        return d;
+    }
+    // A pixel shader constant table: header, one record per sampler, then
+    // the strings, offsets from the header.
+    d.append(QByteArray(12, '\x55'));
+    const qsizetype header = d.size();
+    const auto count = static_cast<quint32>(samplers.size());
+    const quint32 records = 28;
+    quint32 strings = records + count * 20;
+    QByteArray names;
+    QList<quint32> nameOffsets;
+    for (const auto& [reg, name] : samplers) {
+        nameOffsets.append(strings + static_cast<quint32>(names.size()));
+        names.append(name.toLatin1() + '\0');
+    }
+    const quint32 target = strings + static_cast<quint32>(names.size());
+    be32(d, 28);
+    be32(d, target);
+    be32(d, 0xFFFF0300);
+    be32(d, count);
+    be32(d, records);
+    be32(d, 0);
+    be32(d, target);
+    for (int i = 0; i < samplers.size(); ++i) {
+        be32(d, nameOffsets[i]);
+        be16(d, 3);
+        be16(d, static_cast<quint16>(samplers[i].first));
+        be16(d, 1);
+        be16(d, 0);
+        be32(d, 0);
+        be32(d, 0);
+    }
+    d.append(names);
+    d.append("ps_3_0", 7);
+    Q_ASSERT(d.size() - header == target + 7);
     return d;
 }
 
@@ -705,13 +772,15 @@ private slots:
         part.texcoords = {{0, 0}, {65535, 0}, {0, 65535}, {32768, 16384}};
         part.materials[0].tableIndex = 1;
         part.materials[0].uvOffsetScale = {0.5F, -0.25F, 2.0F, 4.0F};
-        const TestTail tail{{{0, {-1}}, {1, {3, -1, -1, -1, -1, 0}}},
+        const TestTail tail{{{0, {-1}}, {1, {3, -1, -1, -1, -1, 0}, {QVector4D(4, 4, 6, 6), QVector4D(3, 3, 1, 1)}}},
             {QStringLiteral("shaders\\track\\add_diff_opac_rgba.fx"), QStringLiteral("shaders\\track\\h_diff_1.fx")}};
         const fh1::RenderMesh mesh = fh1::rendermesh::parse(renderModel({part}, tail), QStringLiteral("test"));
 
         QCOMPARE(mesh.materialTable.size(), std::size_t{2});
         QCOMPARE(mesh.materialTable[1].shader, 1u);
         QCOMPARE(mesh.materialTable[1].textureSlots, (std::vector<int>{3, -1, -1, -1, -1, 0}));
+        QCOMPARE(
+            mesh.materialTable[1].constants, (std::vector<QVector4D>{QVector4D(4, 4, 6, 6), QVector4D(3, 3, 1, 1)}));
         QCOMPARE(mesh.shaders.size(), 2);
         QCOMPARE(mesh.shaders[1], QStringLiteral("shaders\\track\\h_diff_1.fx"));
 
@@ -743,6 +812,23 @@ private slots:
         const std::optional<fh1::ShaderLayout> none = fh1::readShaderLayout(shaderObject({0x3007, 0xA008}));
         QVERIFY(none.has_value());
         QCOMPARE(none->texcoord0Offset, -1);
+        QCOMPARE(none->colourOffset, 16);
+        QVERIFY(none->samplers.empty());
+        // Vertex-blended ground: three coordinate pairs and a colour, with its
+        // samplers in the pixel shader's constant table.
+        const std::optional<fh1::ShaderLayout> blend
+            = fh1::readShaderLayout(shaderObject({0x3007, 0x5008, 0x15009, 0x2500A, 0xA00B},
+                {{0, QStringLiteral("Blend_ASampler")}, {1, QStringLiteral("Blend_BSampler")},
+                    {5, QStringLiteral("AO_Sampler")}}));
+        QVERIFY(blend.has_value());
+        QCOMPARE(blend->texcoord0Offset, 16);
+        QCOMPARE(blend->texcoord1Offset, 20);
+        QCOMPARE(blend->texcoord2Offset, 24);
+        QCOMPARE(blend->colourOffset, 28);
+        QCOMPARE(blend->samplers.size(), std::size_t{6});
+        QCOMPARE(blend->samplerRegister(QStringLiteral("AO_Sampler")), 5);
+        QCOMPARE(blend->samplerRegister(QStringLiteral("Blend_BSampler")), 1);
+        QCOMPARE(blend->samplerRegister(QStringLiteral("Splat_Sampler")), -1);
         QVERIFY(!fh1::readShaderLayout(QByteArray("no shader here")).has_value());
 
         const QByteArray pvs = pvsFile({0x10, 0x20, 0x2B40}, {{2, 0}, {}, {1}});
@@ -2010,6 +2096,175 @@ private slots:
         preview.clear(QStringLiteral("nothing"));
         QVERIFY(!preview.model().has_value());
         QVERIFY(!preview.isSettled());
+    }
+
+    void shadesGroundAndWater()
+    {
+        // Ground mixed by a splat map, ground mixed by vertex colour, a road
+        // naming Blend layers too, and a lake over red ground.
+        const QList<QPair<quint16, quint16>> corners{{0, 0}, {65535, 0}, {0, 65535}, {65535, 65535}};
+        TestPart splat = quad(QStringLiteral("TERR_Splat_LOD00"), 300, 300, 0, 100);
+        splat.stride = 28;
+        splat.texcoords = corners;
+        splat.texcoords1 = corners;
+        TestPart vertexBlend = quad(QStringLiteral("TERR_Blend_LOD00"), 300, 700, 0, 100);
+        vertexBlend.stride = 32;
+        vertexBlend.texcoords = corners;
+        vertexBlend.texcoords1 = {{1, 2}, {1, 2}, {1, 2}, {1, 2}};
+        vertexBlend.texcoords2 = corners;
+        vertexBlend.colours = {0x11223300, 0x112233FF, 0x11223380, 0x11223380};
+        vertexBlend.colourByte = 28;
+        TestPart road = quad(QStringLiteral("Road_LOD00"), 700, 300, 0, 100);
+        road.stride = 28;
+        road.texcoords = corners;
+        TestPart lake = quad(QStringLiteral("Lake_NOLOD"), 700, 300, 2, 60);
+        lake.stride = 20;
+        lake.texcoords = corners;
+        const QString splatShader = QStringLiteral("shaders\\track\\h_blnd2_test.fx");
+        const QString blendShader = QStringLiteral("shaders\\track\\h_vblnd_test.fx");
+        const QString roadShader = QStringLiteral("shaders\\track\\h_road_test.fx");
+        const QString lakeShader = QStringLiteral("shaders\\track\\lake_test.fx");
+        const auto red = bixTexture(8, qRgb(230, 20, 20));
+        const auto green = bixTexture(8, qRgb(20, 230, 20));
+        const auto splatRed = bixTexture(8, qRgb(255, 0, 0));
+        const auto white = bixTexture(8, qRgb(255, 255, 255));
+        const auto normal = bixTexture(8, qRgb(128, 128, 255));
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"),
+                 renderModel({splat},
+                     TestTail{
+                         {{0, {0, 1, 2, -1, -1, 3}, {QVector4D(2, 2, 4, 4), QVector4D(0, 0, 1, 1)}}}, {splatShader}})},
+                {QStringLiteral("coloradoout.00001.rmb.bin"),
+                    renderModel({vertexBlend}, TestTail{{{0, {0, 1, -1, -1, -1, 2}}}, {blendShader}})},
+                {QStringLiteral("coloradoout.00002.rmb.bin"),
+                    renderModel({road}, TestTail{{{0, {0, 1, 2}}}, {roadShader}})},
+                {QStringLiteral("coloradoout.00003.rmb.bin"),
+                    renderModel({lake}, TestTail{{{0, {-1, 0, -1}}}, {lakeShader}})},
+                {QStringLiteral("shaders/track/h_blnd2_test.fxobj"),
+                    shaderObject({0x3007, 0x5008, 0x15009, 0xA00A},
+                        {{0, QStringLiteral("Blend_ASampler")}, {1, QStringLiteral("Blend_BSampler")},
+                            {2, QStringLiteral("Splat_Sampler")}, {5, QStringLiteral("AO_Sampler")}})},
+                {QStringLiteral("shaders/track/h_vblnd_test.fxobj"),
+                    shaderObject({0x3007, 0x5008, 0x15009, 0x2500A, 0xA00B},
+                        {{0, QStringLiteral("Blend_ASampler")}, {1, QStringLiteral("Blend_BSampler")},
+                            {5, QStringLiteral("AO_Sampler")}})},
+                {QStringLiteral("shaders/track/h_road_test.fxobj"),
+                    shaderObject({0x3007, 0x5008, 0x15009, 0xA00A},
+                        {{0, QStringLiteral("Blend_ASampler")}, {1, QStringLiteral("Blend_BSampler")},
+                            {2, QStringLiteral("Noise_Sampler")}})},
+                {QStringLiteral("shaders/track/lake_test.fxobj"),
+                    shaderObject({0x3007, 0x5008},
+                        {{0, QStringLiteral("CubeMapSampler")}, {1, QStringLiteral("NormalMapASampler")},
+                            {2, QStringLiteral("NormalMapBSampler")}})},
+                {QStringLiteral("_0x00000100.bix"), red.first}, {QStringLiteral("_0x00000100_B.bix"), red.second},
+                {QStringLiteral("_0x00000101.bix"), green.first}, {QStringLiteral("_0x00000101_B.bix"), green.second},
+                {QStringLiteral("_0x00000102.bix"), splatRed.first},
+                {QStringLiteral("_0x00000102_B.bix"), splatRed.second},
+                {QStringLiteral("_0x00000103.bix"), white.first}, {QStringLiteral("_0x00000103_B.bix"), white.second},
+                {QStringLiteral("_0x00000104.bix"), normal.first},
+                {QStringLiteral("_0x00000104_B.bix"), normal.second}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        const std::optional<fh1::TrackTextures> textures = fh1::TrackTextures::load(
+            pvsFile({0x100, 0x101, 0x102, 0x103, 0x104}, {{0, 1, 2, 3}, {0, 1, 3}, {0, 1, 2}, {4}}), archive);
+        QVERIFY(textures.has_value());
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive);
+        QVERIFY(index.has_value());
+        QCOMPARE(index->chunks().size(), std::size_t{4});
+        std::vector<std::uint32_t> all(index->chunks().size());
+        std::iota(all.begin(), all.end(), 0U);
+        const fh1::TileMesh mesh = fh1::buildTileMesh(archive, *index, all, &*textures);
+        QCOMPARE(mesh.failedChunks, 0);
+        const auto batchOf = [&mesh](fh1::TileMesh::Shading shading) {
+            const auto it = std::find_if(mesh.batches.begin(), mesh.batches.end(),
+                [shading](const fh1::TileMesh::Batch& b) { return b.shading == shading; });
+            return it == mesh.batches.end() ? nullptr : &*it;
+        };
+        using Shading = fh1::TileMesh::Shading;
+        constexpr std::uint32_t kNone = fh1::TileMesh::kNoTexture;
+        const fh1::TileMesh::Batch* splatBatch = batchOf(Shading::Splat);
+        QVERIFY(splatBatch != nullptr);
+        QCOMPARE(splatBatch->texture, 0x100u);
+        QCOMPARE(splatBatch->layers, (std::array<std::uint32_t, 4>{0x101, kNone, 0x102, 0x103}));
+        QCOMPARE(splatBatch->layerScales, (std::array<float, 6>{2, 2, 4, 4, 1, 1}));
+        const fh1::TileMesh::Batch* blendBatch = batchOf(Shading::VertexBlend);
+        QVERIFY(blendBatch != nullptr);
+        QCOMPARE(blendBatch->layers, (std::array<std::uint32_t, 4>{0x101, kNone, kNone, 0x103}));
+        const fh1::TileMesh::Batch* waterBatch = batchOf(Shading::Water);
+        QVERIFY(waterBatch != nullptr);
+        QCOMPARE(waterBatch->texture, 0x104u);
+        // The road stays plain, with its first layer as the diffuse texture.
+        const fh1::TileMesh::Batch* plain = batchOf(Shading::Plain);
+        QVERIFY(plain != nullptr);
+        QCOMPARE(plain->texture, 0x100u);
+        QCOMPARE(plain->layers, (std::array<std::uint32_t, 4>{kNone, kNone, kNone, kNone}));
+
+        // Vertex data: the splat ground's second pair, the blended ground's
+        // third pair and colour.
+        const auto vertexOfBatch = [&mesh](const fh1::TileMesh::Batch& batch, int n) {
+            return mesh.vertices.data()
+                + static_cast<std::size_t>(mesh.indices[batch.firstIndex + n]) * fh1::TileMesh::kFloatsPerVertex;
+        };
+        for (int n = 0; n < 6; ++n) {
+            const float* v = vertexOfBatch(*splatBatch, n);
+            QVERIFY(v[fh1::TileMesh::kSecondTexcoord] == v[6] && v[fh1::TileMesh::kSecondTexcoord + 1] == v[7]);
+            const float* b = vertexOfBatch(*blendBatch, n);
+            QVERIFY(b[fh1::TileMesh::kSecondTexcoord] == b[6] && b[fh1::TileMesh::kSecondTexcoord + 1] == b[7]);
+            std::array<unsigned char, 4> colour{};
+            std::memcpy(colour.data(), &b[fh1::TileMesh::kColour], 4);
+            QCOMPARE(colour[0], static_cast<unsigned char>(0x11));
+            QCOMPARE(colour[2], static_cast<unsigned char>(0x33));
+        }
+
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QOpenGLContext context;
+        context.setFormat(format);
+        QOffscreenSurface surface;
+        surface.setFormat(format);
+        surface.create();
+        if (!context.create() || !context.makeCurrent(&surface)) {
+            QSKIP("no OpenGL 3.3 context available to check drawing");
+        }
+        const fh1::WorldTileGrid grid(*index, 2000.0F);
+        WorldRenderer renderer;
+        QVERIFY2(renderer.initialize(), qPrintable(renderer.errorString()));
+        renderer.setGrid(&grid);
+        const QSize size(32, 32);
+        QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
+        fbo.bind();
+        const auto centreAt = [&](float x, float z) {
+            WorldCamera camera;
+            camera.position = QVector3D(x, 150.0F, z);
+            camera.pitch = -1.5F;
+            for (const TileRequest& request : renderer.requests(camera, {})) {
+                renderer.upload(
+                    request.tile, request.state, fh1::buildTileMesh(archive, *index, request.chunks, &*textures));
+            }
+            for (const std::uint32_t id : renderer.takeTextureRequests()) {
+                const std::optional<fh1::TextureMipChain> chain = textures->loadTexture(archive, id);
+                if (!chain) {
+                    return QColor();
+                }
+                renderer.uploadTexture(id, *chain);
+            }
+            renderer.draw(camera, size);
+            return fbo.toImage().pixelColor(size.width() / 2, size.height() / 2);
+        };
+        // The splat map is red everywhere, so the ground shows layer B.
+        const QColor ground = centreAt(300.0F, 300.0F);
+        QVERIFY(ground.isValid());
+        QVERIFY2(ground.green() > 2 * ground.red(), qPrintable(ground.name()));
+        // The water tints the red road beneath it.
+        const QColor water = centreAt(700.0F, 300.0F);
+        QVERIFY(water.isValid());
+        QVERIFY2(water.red() < 150 && water.blue() > 40, qPrintable(water.name()));
+        fbo.release();
+        renderer.release();
     }
 
     void rendersTexturedOffscreen()

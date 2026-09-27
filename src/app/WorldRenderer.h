@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QVector3D>
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -161,12 +162,15 @@ private:
     };
 
     void releaseTile(GpuTile& tile);
-    /// Draws the batches of the `visible` tiles that are (or are not)
-    /// backdrop terrain, with the world program bound. Of backdrop chunks
-    /// not drawn from `zone` (see fh1::WorldChunk::visibleFrom), only the
-    /// parts below the camera are drawn.
-    void drawBatches(
-        const std::vector<std::size_t>& visible, bool backdrop, int zone, int texturedLocation, Stats& stats);
+    /// The three passes of draw(): everything but backdrop and water, the
+    /// backdrop terrain, then water blended over both.
+    enum class Pass { Foreground, Backdrop, Water };
+
+    /// Draws the batches of the `visible` tiles that belong to `pass`, with
+    /// the world program bound. Of backdrop chunks not drawn from `zone`
+    /// (see fh1::WorldChunk::visibleFrom), only the parts below the camera
+    /// are drawn.
+    void drawBatches(const std::vector<std::size_t>& visible, Pass pass, int zone, Stats& stats);
     void addTextureUser(std::uint32_t id);
     void removeTextureUser(std::uint32_t id);
     void deleteTexture(GpuTexture& texture);
@@ -185,5 +189,15 @@ private:
     bool m_initialized = false;
     QString m_error;
     std::unique_ptr<QOpenGLShaderProgram> m_program;
-    int m_belowCameraLocation = -1;
+    /// Uniform locations of the world program, set by draw().
+    struct Uniforms {
+        int textured = -1;
+        int shading = -1;
+        /// uHasLayerB, uHasLayerC, uHasSplat, uHasOcclusion.
+        std::array<int, fh1::TileMesh::LayerCount> hasLayer{-1, -1, -1, -1};
+        /// uScaleA, uScaleB, uScaleC.
+        std::array<int, 3> scales{-1, -1, -1};
+        int belowCamera = -1;
+    };
+    Uniforms m_uniforms;
 };

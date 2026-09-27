@@ -7,6 +7,7 @@
 
 #include <QRectF>
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -48,18 +49,41 @@ private:
 };
 
 /// Geometry of one tile state, ready for upload: interleaved position
-/// (x, y, z), normal (x, y, z) and texture coordinate (u, v) floats, and
-/// triangle-list indices grouped into one batch per diffuse texture, with
-/// backdrop terrain in batches of its own, one per chunk, so each can be
-/// shown or hidden by the camera's zone (WorldChunk::zones).
+/// (x, y, z), normal (x, y, z), first and second texture coordinates (u, v
+/// each) and the vertex colour's four bytes (RGBA) in one float's space, and
+/// triangle-list indices grouped into one batch per surface (shading and
+/// textures), with backdrop terrain in batches of its own, one per chunk, so
+/// each can be shown or hidden by the camera's zone (WorldChunk::zones).
 struct TileMesh {
-    static constexpr int kFloatsPerVertex = 8;
+    static constexpr int kFloatsPerVertex = 11;
+    /// Float index of the second texture coordinate pair in a vertex.
+    static constexpr int kSecondTexcoord = 8;
+    /// Float index of the vertex colour's bytes in a vertex.
+    static constexpr int kColour = 10;
     /// Batch texture of geometry without a known diffuse texture.
     static constexpr std::uint32_t kNoTexture = 0xFFFFFFFF;
     /// Batch chunk of geometry merged from several chunks.
     static constexpr std::uint32_t kMergedChunks = 0xFFFFFFFF;
 
+    /// How a batch's textures combine, from its shader's samplers.
+    enum class Shading : std::uint8_t {
+        /// One diffuse texture, alpha-tested.
+        Plain,
+        /// Ground: Blend_A, Blend_B and Blend_C mixed by a splat map (red
+        /// weighs B, green C, the rest A), times an ambient occlusion map.
+        Splat,
+        /// Ground: Blend_A and Blend_B mixed by the vertex colour's alpha,
+        /// times an ambient occlusion map.
+        VertexBlend,
+        /// Lakes: animated normal maps and a reflection, drawn translucent.
+        Water,
+    };
+    /// Indices into Batch::layers.
+    enum Layer { LayerB, LayerC, SplatMap, OcclusionMap, LayerCount };
+
     struct Batch {
+        /// The diffuse texture, Blend_A for ground, or the first normal map
+        /// for water.
         std::uint32_t texture = kNoTexture;
         std::uint32_t firstIndex = 0;
         std::uint32_t indexCount = 0;
@@ -68,6 +92,17 @@ struct TileMesh {
         /// For backdrop batches, the chunk (index into WorldIndex::chunks())
         /// the geometry comes from; kMergedChunks otherwise.
         std::uint32_t chunk = kMergedChunks;
+        Shading shading = Shading::Plain;
+        /// The other textures of ground shading (see Layer); kNoTexture
+        /// where unused. The splat and occlusion maps read the second
+        /// texture coordinates.
+        std::array<std::uint32_t, LayerCount> layers{kNoTexture, kNoTexture, kNoTexture, kNoTexture};
+        /// How often Blend_A, Blend_B and Blend_C repeat per unit of the first
+        /// texture coordinates (u, v each).
+        std::array<float, 6> layerScales{1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F};
+
+        /// Every texture the batch draws with.
+        std::vector<std::uint32_t> textures() const;
     };
 
     /// One model file that went into the mesh, or failed to.

@@ -53,8 +53,21 @@ struct ShaderLayout {
     /// Byte offset of the first texture coordinate pair in a vertex, or -1
     /// when the shader reads none.
     int texcoord0Offset = -1;
+    /// Byte offset of the second texture coordinate pair, or -1.
+    int texcoord1Offset = -1;
+    /// Byte offset of the third texture coordinate pair, or -1.
+    int texcoord2Offset = -1;
+    /// Byte offset of the vertex colour, or -1.
+    int colourOffset = -1;
     /// Vertex size implied by the shader's inputs.
     int vertexBytes = 0;
+    /// Name of the pixel shader's sampler at each register ("Blend_ASampler",
+    /// "Splat_Sampler"), empty where there is none. A material's texture
+    /// slot k feeds register k.
+    std::vector<QString> samplers;
+
+    /// The register of sampler `name`, or -1.
+    int samplerRegister(const QString& name) const;
 };
 
 /// Reads the vertex inputs of a compiled track shader (`.fxobj`).
@@ -66,6 +79,14 @@ struct ShaderLayout {
 /// register in bits 0-7; outputs use registers from 0x30 up. Every input is
 /// four bytes in the vertex, after the 12-byte position, in table order.
 /// That layout is inferred from matching the tables against vertex strides.
+///
+/// The sampler registers come from the first pixel shader's constant table,
+/// which has the layout of Direct3D's (big-endian, without its "CTAB" tag):
+/// a 28-byte header (u32 28, creator offset, version 0xFFFF0300, constant
+/// count, record offset, flags, target offset pointing at "ps_3_0"), then
+/// 20-byte records (name offset, u16 register set, u16 register, u16
+/// count, u16, type offset, default offset), offsets from the header;
+/// register set 3 holds samplers.
 std::optional<ShaderLayout> readShaderLayout(const QByteArray& fxobj);
 
 /// Which of the track's textures each render model uses, and how to read

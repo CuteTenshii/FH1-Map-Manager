@@ -3,8 +3,11 @@
 #include "Loaders.h"
 #include "RenderMesh.h"
 
+#include <QtEndian>
+
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <tuple>
@@ -76,33 +79,120 @@ std::vector<std::uint32_t> WorldTileGrid::chunksAt(const Tile& tile, float dista
 
 namespace {
 
-/// The diffuse texture of `material` and where its texture coordinates sit
-/// in a vertex, if both are known.
-struct DiffuseSource {
-    std::uint32_t texture = TileMesh::kNoTexture;
-    int texcoordOffset = -1;
+/// What a material draws with: its surface (the batch it goes into, less
+/// the index range) and where its vertices keep the inputs that surface
+/// reads.
+struct SurfaceSource {
+    TileMesh::Batch surface;
+    int texcoord0Offset = -1;
+    int texcoord1Offset = -1;
+    int colourOffset = -1;
 };
 
-DiffuseSource diffuseSource(const RenderMesh& mesh, const RenderMesh::Part& part, const RenderMesh::Material& material,
+/// Orders batches that draw alike, so identical surfaces share one.
+using BatchKey = std::tuple<bool, std::uint32_t, TileMesh::Shading, std::uint32_t,
+    std::array<std::uint32_t, TileMesh::LayerCount>, std::array<float, 6>>;
+
+BatchKey batchKey(const TileMesh::Batch& b)
+{
+    return {b.backdrop, b.chunk, b.shading, b.texture, b.layers, b.layerScales};
+}
+
+/// A layer's texture scale from a material constant, where it gives one.
+float layerScale(float value)
+{
+    return value > 0.0F ? value : 1.0F;
+}
+
+SurfaceSource surfaceSource(const RenderMesh& mesh, const RenderMesh::Part& part, const RenderMesh::Material& material,
     const std::vector<std::uint32_t>* objectTextures, const TrackTextures& textures)
 {
     if (objectTextures == nullptr || material.tableIndex >= mesh.materialTable.size()) {
         return {};
     }
     const RenderMesh::MaterialInfo& info = mesh.materialTable[material.tableIndex];
-    // Slot 0 is sampler register 0, the diffuse (or first blend layer)
-    // texture of every track shader.
-    if (info.textureSlots.empty() || info.textureSlots.front() < 0
-        || static_cast<std::size_t>(info.textureSlots.front()) >= objectTextures->size()
-        || info.shader >= static_cast<std::uint32_t>(mesh.shaders.size())) {
+    if (info.shader >= static_cast<std::uint32_t>(mesh.shaders.size())) {
         return {};
     }
     const ShaderLayout* layout = textures.shader(mesh.shaders[static_cast<qsizetype>(info.shader)]);
-    if (layout == nullptr || layout->texcoord0Offset < 0
-        || static_cast<std::uint32_t>(layout->texcoord0Offset) + 4 > part.stride) {
+    const auto fits
+        = [&part](int offset) { return offset >= 0 && static_cast<std::uint32_t>(offset) + 4 <= part.stride; };
+    if (layout == nullptr || !fits(layout->texcoord0Offset)) {
         return {};
     }
-    return {(*objectTextures)[static_cast<std::size_t>(info.textureSlots.front())], layout->texcoord0Offset};
+    // Material slot k feeds sampler register k.
+    const auto textureOf = [&](const QString& sampler) -> std::uint32_t {
+        const int reg = layout->samplerRegister(sampler);
+        if (reg < 0 || static_cast<std::size_t>(reg) >= info.textureSlots.size()) {
+            return TileMesh::kNoTexture;
+        }
+        const int slot = info.textureSlots[static_cast<std::size_t>(reg)];
+        return slot >= 0 && static_cast<std::size_t>(slot) < objectTextures->size()
+            ? (*objectTextures)[static_cast<std::size_t>(slot)]
+            : TileMesh::kNoTexture;
+    };
+    SurfaceSource source;
+    source.texcoord0Offset = layout->texcoord0Offset;
+    TileMesh::Batch& surface = source.surface;
+
+    const std::uint32_t normalMap = textureOf(QStringLiteral("NormalMapASampler"));
+    const std::uint32_t blendA = textureOf(QStringLiteral("Blend_ASampler"));
+    const std::uint32_t blendB = textureOf(QStringLiteral("Blend_BSampler"));
+    const std::uint32_t splat = textureOf(QStringLiteral("Splat_Sampler"));
+    if (normalMap != TileMesh::kNoTexture && layout->samplerRegister(QStringLiteral("CubeMapSampler")) >= 0) {
+        surface.shading = TileMesh::Shading::Water;
+        surface.texture = normalMap;
+        return source;
+    }
+    // The splat and occlusion maps span a ground patch once, on the last
+    // coordinate pair the shader reads: the second for splat-blended
+    // ground, the third for vertex-blended ground.
+    const int patchOffset = fits(layout->texcoord2Offset) ? layout->texcoord2Offset
+        : fits(layout->texcoord1Offset)                   ? layout->texcoord1Offset
+                                                          : -1;
+    const bool splatGround = blendA != TileMesh::kNoTexture && blendB != TileMesh::kNoTexture
+        && splat != TileMesh::kNoTexture && patchOffset >= 0;
+    // Roads also name two Blend layers, but mix them with noise and modulate
+    // maps rather than a vertex colour; they stay plain.
+    const bool roadLayers = layout->samplerRegister(QStringLiteral("Noise_Sampler")) >= 0
+        || layout->samplerRegister(QStringLiteral("Modulate_Sampler")) >= 0;
+    const bool vertexGround = blendA != TileMesh::kNoTexture && blendB != TileMesh::kNoTexture
+        && splat == TileMesh::kNoTexture && !roadLayers && fits(layout->colourOffset);
+    if (splatGround || vertexGround) {
+        surface.shading = splatGround ? TileMesh::Shading::Splat : TileMesh::Shading::VertexBlend;
+        surface.texture = blendA;
+        surface.layers[TileMesh::LayerB] = blendB;
+        surface.layers[TileMesh::LayerC]
+            = splatGround ? textureOf(QStringLiteral("Blend_CSampler")) : TileMesh::kNoTexture;
+        surface.layers[TileMesh::SplatMap] = splatGround ? splat : TileMesh::kNoTexture;
+        if (patchOffset >= 0) {
+            source.texcoord1Offset = patchOffset;
+            surface.layers[TileMesh::OcclusionMap] = textureOf(QStringLiteral("AO_Sampler"));
+        }
+        if (vertexGround) {
+            source.colourOffset = layout->colourOffset;
+        }
+        // The first constant holds Blend_A's and Blend_B's scales, the
+        // second Blend_C's.
+        if (!info.constants.empty()) {
+            const QVector4D& ab = info.constants[0];
+            surface.layerScales[0] = layerScale(ab.x());
+            surface.layerScales[1] = layerScale(ab.y());
+            surface.layerScales[2] = layerScale(ab.z());
+            surface.layerScales[3] = layerScale(ab.w());
+        }
+        if (info.constants.size() > 1) {
+            surface.layerScales[4] = layerScale(info.constants[1].x());
+            surface.layerScales[5] = layerScale(info.constants[1].y());
+        }
+        return source;
+    }
+    // Register 0 holds the diffuse texture of every other track shader.
+    if (!info.textureSlots.empty() && info.textureSlots.front() >= 0
+        && static_cast<std::size_t>(info.textureSlots.front()) < objectTextures->size()) {
+        surface.texture = (*objectTextures)[static_cast<std::size_t>(info.textureSlots.front())];
+    }
+    return source;
 }
 
 } // namespace
@@ -125,9 +215,9 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
     const TrackTextures* textures)
 {
     TileMesh out;
-    // Indices per (backdrop, chunk, texture), concatenated into out.indices
-    // at the end. Only backdrop geometry is kept apart by chunk.
-    std::map<std::tuple<bool, std::uint32_t, std::uint32_t>, std::vector<std::uint32_t>> batchIndices;
+    // Indices per surface, concatenated into out.indices at the end. Only
+    // backdrop geometry is kept apart by chunk.
+    std::map<BatchKey, std::pair<TileMesh::Batch, std::vector<std::uint32_t>>> batchIndices;
     const auto& entries = archive.entries();
     const auto fail = [&out](std::uint32_t chunk, const QString& error) {
         ++out.failedChunks;
@@ -219,17 +309,19 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
                 if (isNotSurface(mesh, material)) {
                     continue;
                 }
-                const DiffuseSource source = textures != nullptr
-                    ? diffuseSource(mesh, part, material, objectTextures, *textures)
-                    : DiffuseSource{};
+                SurfaceSource source = textures != nullptr
+                    ? surfaceSource(mesh, part, material, objectTextures, *textures)
+                    : SurfaceSource{};
+                source.surface.backdrop = chunk.backdrop;
+                source.surface.chunk = chunk.backdrop ? c : TileMesh::kMergedChunks;
                 std::fill(remap.begin(), remap.end(), TileMesh::kNoTexture);
-                if (source.texture != TileMesh::kNoTexture
-                    && std::find(model.textures.begin(), model.textures.end(), source.texture)
-                        == model.textures.end()) {
-                    model.textures.push_back(source.texture);
+                for (const std::uint32_t id : source.surface.textures()) {
+                    if (std::find(model.textures.begin(), model.textures.end(), id) == model.textures.end()) {
+                        model.textures.push_back(id);
+                    }
                 }
-                std::vector<std::uint32_t>& target
-                    = batchIndices[{chunk.backdrop, chunk.backdrop ? c : TileMesh::kMergedChunks, source.texture}];
+                auto& [batch, target] = batchIndices[batchKey(source.surface)];
+                batch = source.surface;
                 for (std::uint32_t v : material.triangles) {
                     if (remap[v] == TileMesh::kNoTexture) {
                         remap[v] = static_cast<std::uint32_t>(out.vertexCount());
@@ -238,11 +330,24 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
                         if (n.isNull()) {
                             n = QVector3D(0.0F, 1.0F, 0.0F);
                         }
-                        const QVector2D uv = source.texcoordOffset >= 0
-                            ? RenderMesh::texcoord(part, material, v, source.texcoordOffset)
+                        // The material's offset and scale decode both
+                        // coordinate pairs.
+                        const QVector2D uv = source.texcoord0Offset >= 0
+                            ? RenderMesh::texcoord(part, material, v, source.texcoord0Offset)
                             : QVector2D();
-                        out.vertices.insert(
-                            out.vertices.end(), {p.x(), p.y(), p.z(), n.x(), n.y(), n.z(), uv.x(), uv.y()});
+                        const QVector2D uv1 = source.texcoord1Offset >= 0
+                            ? RenderMesh::texcoord(part, material, v, source.texcoord1Offset)
+                            : QVector2D();
+                        // The colour's bytes travel in a float's space, in the
+                        // file's order; the renderer reads them back as four
+                        // bytes.
+                        const std::uint32_t colour = source.colourOffset >= 0
+                            ? qToBigEndian(RenderMesh::colour(part, v, source.colourOffset))
+                            : 0xFFFFFFFFU;
+                        float packed = 0.0F;
+                        std::memcpy(&packed, &colour, sizeof packed);
+                        out.vertices.insert(out.vertices.end(),
+                            {p.x(), p.y(), p.z(), n.x(), n.y(), n.z(), uv.x(), uv.y(), uv1.x(), uv1.y(), packed});
                     }
                     target.push_back(remap[v]);
                 }
@@ -250,16 +355,31 @@ TileMesh buildTileMesh(const ForzaZip& archive, const WorldIndex& index, const s
         }
         out.models.push_back(std::move(model));
     }
-    for (auto& [key, indices] : batchIndices) {
+    for (auto& [key, entry] : batchIndices) {
+        auto& [batch, indices] = entry;
         if (indices.empty()) {
             continue;
         }
-        const auto& [backdrop, chunk, texture] = key;
-        out.batches.push_back({texture, static_cast<std::uint32_t>(out.indices.size()),
-            static_cast<std::uint32_t>(indices.size()), backdrop, chunk});
+        batch.firstIndex = static_cast<std::uint32_t>(out.indices.size());
+        batch.indexCount = static_cast<std::uint32_t>(indices.size());
+        out.batches.push_back(batch);
         out.indices.insert(out.indices.end(), indices.begin(), indices.end());
     }
     return out;
+}
+
+std::vector<std::uint32_t> TileMesh::Batch::textures() const
+{
+    std::vector<std::uint32_t> ids;
+    if (texture != kNoTexture) {
+        ids.push_back(texture);
+    }
+    for (const std::uint32_t id : layers) {
+        if (id != kNoTexture && std::find(ids.begin(), ids.end(), id) == ids.end()) {
+            ids.push_back(id);
+        }
+    }
+    return ids;
 }
 
 } // namespace fh1

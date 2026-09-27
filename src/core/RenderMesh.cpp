@@ -171,15 +171,23 @@ void readMaterialTable(Reader& r, RenderMesh& mesh)
             r.expect(3, "material entry tag");
             info.shader = r.u32();
             r.expect(0, "material entry header");
-            // Two groups of shader constants (float4 each); which constants
-            // they set is not decoded.
+            // Two groups of shader constants (float4 each); the second
+            // holds the material's own values.
             for (int group = 0; group < 2; ++group) {
                 r.expect(1, "shader constant tag");
                 const std::uint32_t constants = r.u32();
                 if (constants > kMaxConstants) {
                     r.fail(QStringLiteral("implausible shader constant count %1").arg(constants));
                 }
-                r.skip(static_cast<qsizetype>(constants) * 16);
+                for (std::uint32_t k = 0; k < constants; ++k) {
+                    const float x = r.f32();
+                    const float y = r.f32();
+                    const float z = r.f32();
+                    const float w = r.f32();
+                    if (group == 1) {
+                        info.constants.emplace_back(x, y, z, w);
+                    }
+                }
             }
             r.expect(1, "texture slot tag");
             const std::uint32_t slotCount = r.u32();
@@ -217,11 +225,30 @@ QVector2D RenderMesh::texcoord(const Part& part, const Material& material, std::
     if (offset < 0 || static_cast<std::uint32_t>(offset) + 4 > part.stride || at + 4 > part.vertexData.size()) {
         return {};
     }
+    const QVector2D raw = rawTexcoord(part, vertex, offset);
+    const QVector4D& t = material.uvOffsetScale;
+    return {t.x() + t.z() * raw.x(), t.y() + t.w() * raw.y()};
+}
+
+QVector2D RenderMesh::rawTexcoord(const Part& part, std::uint32_t vertex, int offset)
+{
+    const qsizetype at = static_cast<qsizetype>(vertex) * part.stride + offset;
+    if (offset < 0 || static_cast<std::uint32_t>(offset) + 4 > part.stride || at + 4 > part.vertexData.size()) {
+        return {};
+    }
     constexpr float kUnit = 1.0F / 65535.0F;
     const float u = static_cast<float>(qFromBigEndian<std::uint16_t>(part.vertexData.constData() + at)) * kUnit;
     const float v = static_cast<float>(qFromBigEndian<std::uint16_t>(part.vertexData.constData() + at + 2)) * kUnit;
-    const QVector4D& t = material.uvOffsetScale;
-    return {t.x() + t.z() * u, t.y() + t.w() * v};
+    return {u, v};
+}
+
+std::uint32_t RenderMesh::colour(const Part& part, std::uint32_t vertex, int offset)
+{
+    const qsizetype at = static_cast<qsizetype>(vertex) * part.stride + offset;
+    if (offset < 0 || static_cast<std::uint32_t>(offset) + 4 > part.stride || at + 4 > part.vertexData.size()) {
+        return 0;
+    }
+    return qFromBigEndian<std::uint32_t>(part.vertexData.constData() + at);
 }
 
 std::size_t RenderMesh::triangleCount() const

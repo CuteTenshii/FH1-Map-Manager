@@ -22,33 +22,58 @@ const char* const kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aTexcoord;
+layout(location = 3) in vec2 aTexcoord1;
+layout(location = 4) in vec4 aColour;
 uniform mat4 uViewProjection;
 out vec3 vPosition;
 out vec3 vNormal;
 out vec2 vTexcoord;
+out vec2 vTexcoord1;
+out vec4 vColour;
 void main()
 {
     vPosition = aPosition;
     vNormal = aNormal;
     vTexcoord = aTexcoord;
+    vTexcoord1 = aTexcoord1;
+    vColour = aColour;
     // World Z points north; the game's own files, and OpenGL, use Z south.
     gl_Position = uViewProjection * vec4(aPosition.x, aPosition.y, -aPosition.z, 1.0);
 }
 )";
 
+// Shading values, as in fh1::TileMesh::Shading.
 const char* const kFragmentShader = R"(#version 330 core
 in vec3 vPosition;
 in vec3 vNormal;
 in vec2 vTexcoord;
+in vec2 vTexcoord1;
+in vec4 vColour;
 out vec4 fragColour;
 uniform sampler2D uDiffuse;
+uniform sampler2D uLayerB;
+uniform sampler2D uLayerC;
+uniform sampler2D uSplat;
+uniform sampler2D uOcclusion;
+uniform int uShading;
 uniform bool uTextured;
+uniform bool uHasLayerB;
+uniform bool uHasLayerC;
+uniform bool uHasSplat;
+uniform bool uHasOcclusion;
+uniform vec2 uScaleA;
+uniform vec2 uScaleB;
+uniform vec2 uScaleC;
 uniform vec3 uCamera;
 uniform vec3 uSunDirection;
 uniform vec3 uFogColour;
 uniform float uFogDistance;
 // Drawing only what lies below the camera.
 uniform bool uBelowCameraOnly;
+
+const int kPlain = 0;
+const int kSplat = 1;
+const int kWater = 3;
 
 // Geometry without a loaded texture: a plain ground colour, greener where
 // the surface is level and a neutral rock tone on steep faces.
@@ -58,16 +83,56 @@ vec3 untexturedColour(float up)
     return mix(vec3(0.42, 0.40, 0.37), ground, smoothstep(0.35, 0.75, up));
 }
 
+// Ground: up to three layers mixed by the splat map (red weighs B, green C,
+// the rest A) or by the vertex colour's alpha, darkened by the occlusion map.
+vec3 groundColour()
+{
+    vec3 a = texture(uDiffuse, vTexcoord * uScaleA).rgb;
+    vec3 b = uHasLayerB ? texture(uLayerB, vTexcoord * uScaleB).rgb : a;
+    vec3 blended;
+    if (uShading == kSplat) {
+        vec3 c = uHasLayerC ? texture(uLayerC, vTexcoord * uScaleC).rgb : a;
+        vec2 w = uHasSplat ? texture(uSplat, vTexcoord1).rg : vec2(0.0);
+        float wa = max(1.0 - w.x - w.y, 0.0);
+        blended = (a * wa + b * w.x + c * w.y) / max(wa + w.x + w.y, 1e-4);
+    } else {
+        blended = mix(a, b, vColour.a);
+    }
+    if (uHasOcclusion) {
+        blended *= texture(uOcclusion, vTexcoord1).r;
+    }
+    return blended;
+}
+
 void main()
 {
     if (uBelowCameraOnly && vPosition.y > uCamera.y) {
         discard;
     }
+    float distance = length(vPosition - uCamera);
+    float fog = clamp(1.0 - exp(-pow(distance / uFogDistance, 2.0)), 0.0, 1.0);
+
+    if (uShading == kWater) {
+        // A deep tint and the sky it reflects, more of the sky at grazing
+        // angles; the normal map ripples it. The game reflects a cube map
+        // of the scene, which the viewer does not have.
+        vec3 ripple = uTextured ? texture(uDiffuse, vTexcoord).xyz * 2.0 - 1.0 : vec3(0.0);
+        vec3 surfaceNormal = normalize(vec3(ripple.x * 0.15, 1.0, ripple.y * 0.15));
+        vec3 toEye = normalize(uCamera - vPosition);
+        float fresnel = pow(1.0 - clamp(dot(toEye, surfaceNormal), 0.0, 1.0), 3.0);
+        vec3 colour = mix(vec3(0.09, 0.20, 0.25), uFogColour, 0.15 + 0.75 * fresnel);
+        float glint = pow(max(dot(reflect(-toEye, surfaceNormal), uSunDirection), 0.0), 80.0);
+        colour += vec3(0.6 * glint);
+        fragColour = vec4(mix(colour, uFogColour, fog), mix(0.75, 1.0, fresnel));
+        return;
+    }
+
     vec3 normal = normalize(gl_FrontFacing ? vNormal : -vNormal);
     float up = clamp(normal.y, 0.0, 1.0);
-
     vec3 base;
-    if (uTextured) {
+    if (!uTextured) {
+        base = untexturedColour(up);
+    } else if (uShading == kPlain) {
         vec4 texel = texture(uDiffuse, vTexcoord);
         // Foliage, fences and decals are cut-outs.
         if (texel.a < 0.5) {
@@ -75,15 +140,12 @@ void main()
         }
         base = texel.rgb;
     } else {
-        base = untexturedColour(up);
+        base = groundColour();
     }
     float diffuse = max(dot(normal, uSunDirection), 0.0);
     float sky = 0.5 + 0.5 * normal.y;
     vec3 colour = base * (0.28 + 0.22 * sky + 0.75 * diffuse);
-
-    float distance = length(vPosition - uCamera);
-    float fog = 1.0 - exp(-pow(distance / uFogDistance, 2.0));
-    fragColour = vec4(mix(colour, uFogColour, clamp(fog, 0.0, 1.0)), 1.0);
+    fragColour = vec4(mix(colour, uFogColour, fog), 1.0);
 }
 )";
 
@@ -226,8 +288,8 @@ void WorldRenderer::releaseTile(GpuTile& tile)
         glDeleteBuffers(1, &tile.ebo);
     }
     for (const fh1::TileMesh::Batch& batch : tile.batches) {
-        if (batch.texture != fh1::TileMesh::kNoTexture) {
-            removeTextureUser(batch.texture);
+        for (const std::uint32_t id : batch.textures()) {
+            removeTextureUser(id);
         }
     }
     m_uploadedTriangles -= tile.indexCount / 3;
@@ -457,8 +519,8 @@ void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
     // Counting the new batches' textures before releasing the old ones
     // keeps textures both states share from being freed and reloaded.
     for (const fh1::TileMesh::Batch& batch : mesh.batches) {
-        if (batch.texture != fh1::TileMesh::kNoTexture) {
-            addTextureUser(batch.texture);
+        for (const std::uint32_t id : batch.textures()) {
+            addTextureUser(id);
         }
     }
     GpuTile& gpu = m_tiles[static_cast<std::size_t>(tile)];
@@ -489,6 +551,14 @@ void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, kStride,
         reinterpret_cast<const void*>(6 * sizeof(float))); // NOLINT(performance-no-int-to-ptr)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, kStride,
+        reinterpret_cast<const void*>( // NOLINT(performance-no-int-to-ptr)
+            fh1::TileMesh::kSecondTexcoord * sizeof(float)));
+    // The colour's four bytes, stored in a float's space.
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, kStride,
+        reinterpret_cast<const void*>(fh1::TileMesh::kColour * sizeof(float))); // NOLINT(performance-no-int-to-ptr)
     glBindVertexArray(0);
     gpu.indexCount = static_cast<GLsizei>(mesh.indices.size());
     m_uploadedTriangles += gpu.indexCount / 3;
@@ -558,9 +628,17 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     m_program->setUniformValue("uFogColour", kFogColour);
     m_program->setUniformValue("uFogDistance", fogDistance());
     m_program->setUniformValue("uDiffuse", static_cast<GLint>(kDiffuseUnit));
-    const int texturedLocation = m_program->uniformLocation("uTextured");
-    m_belowCameraLocation = m_program->uniformLocation("uBelowCameraOnly");
-    glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
+    m_program->setUniformValue("uLayerB", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::LayerB));
+    m_program->setUniformValue("uLayerC", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::LayerC));
+    m_program->setUniformValue("uSplat", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::SplatMap));
+    m_program->setUniformValue("uOcclusion", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::OcclusionMap));
+    m_uniforms.textured = m_program->uniformLocation("uTextured");
+    m_uniforms.shading = m_program->uniformLocation("uShading");
+    m_uniforms.hasLayer = {m_program->uniformLocation("uHasLayerB"), m_program->uniformLocation("uHasLayerC"),
+        m_program->uniformLocation("uHasSplat"), m_program->uniformLocation("uHasOcclusion")};
+    m_uniforms.scales = {m_program->uniformLocation("uScaleA"), m_program->uniformLocation("uScaleB"),
+        m_program->uniformLocation("uScaleC")};
+    m_uniforms.belowCamera = m_program->uniformLocation("uBelowCameraOnly");
 
     const auto& tiles = m_grid->tiles();
     std::vector<std::size_t> visible;
@@ -583,13 +661,25 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     // such gaps.
     const fh1::ZoneGrid* zones = m_grid->index().zoneGrid();
     const int zone = zones != nullptr ? zones->zoneAt(camera.position.x(), camera.position.z()) : -1;
-    for (const bool backdrop : {false, true}) {
-        glDepthRange(backdrop ? kForegroundDepthFar : 0.0, backdrop ? 1.0 : kForegroundDepthFar);
-        drawBatches(visible, backdrop, zone, texturedLocation, stats);
-    }
+    glDepthRange(0.0, kForegroundDepthFar);
+    drawBatches(visible, Pass::Foreground, zone, stats);
+    glDepthRange(kForegroundDepthFar, 1.0);
+    drawBatches(visible, Pass::Backdrop, zone, stats);
+    // Water last, blended over what lies beneath it, without hiding what
+    // lies behind it from later water.
+    glDepthRange(0.0, kForegroundDepthFar);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    drawBatches(visible, Pass::Water, zone, stats);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
     glDepthRange(0.0, 1.0);
     glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    for (int unit = fh1::TileMesh::LayerCount; unit >= 0; --unit) {
+        glActiveTexture(GL_TEXTURE0 + kDiffuseUnit + unit);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     m_program->release();
     // QPainter draws the overlay into the same framebuffer next and expects
     // depth testing off.
@@ -597,28 +687,44 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     return stats;
 }
 
-void WorldRenderer::drawBatches(
-    const std::vector<std::size_t>& visible, bool backdrop, int zone, int texturedLocation, Stats& stats)
+void WorldRenderer::drawBatches(const std::vector<std::size_t>& visible, Pass pass, int zone, Stats& stats)
 {
     const auto& chunks = m_grid->index().chunks();
+    const auto readyTexture = [this](std::uint32_t id) -> GLuint {
+        if (id == fh1::TileMesh::kNoTexture) {
+            return 0;
+        }
+        const auto it = m_textures.find(id);
+        return it != m_textures.end() && it->second.state == GpuTexture::State::Ready ? it->second.name : 0;
+    };
     for (const std::size_t i : visible) {
         const GpuTile& gpu = m_tiles[i];
         glBindVertexArray(gpu.vao);
         for (const fh1::TileMesh::Batch& batch : gpu.batches) {
-            if (batch.backdrop != backdrop) {
+            const bool water = batch.shading == fh1::TileMesh::Shading::Water;
+            const bool inPass = pass == Pass::Water ? water
+                : pass == Pass::Backdrop            ? batch.backdrop && !water
+                                                    : !batch.backdrop && !water;
+            if (!inPass) {
                 continue;
             }
             const bool fillOnly = batch.chunk < chunks.size() && !chunks[batch.chunk].visibleFrom(zone);
-            m_program->setUniformValue(m_belowCameraLocation, fillOnly);
-            GLuint name = 0;
-            if (batch.texture != fh1::TileMesh::kNoTexture) {
-                const auto it = m_textures.find(batch.texture);
-                if (it != m_textures.end() && it->second.state == GpuTexture::State::Ready) {
-                    name = it->second.name;
-                }
+            m_program->setUniformValue(m_uniforms.belowCamera, fillOnly);
+            m_program->setUniformValue(m_uniforms.shading, static_cast<GLint>(batch.shading));
+            const GLuint diffuse = readyTexture(batch.texture);
+            m_program->setUniformValue(m_uniforms.textured, diffuse != 0);
+            glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
+            glBindTexture(GL_TEXTURE_2D, diffuse);
+            for (int layer = 0; layer < fh1::TileMesh::LayerCount; ++layer) {
+                const GLuint name = readyTexture(batch.layers[static_cast<std::size_t>(layer)]);
+                m_program->setUniformValue(m_uniforms.hasLayer[static_cast<std::size_t>(layer)], name != 0);
+                glActiveTexture(GL_TEXTURE0 + kDiffuseUnit + 1 + layer);
+                glBindTexture(GL_TEXTURE_2D, name);
             }
-            m_program->setUniformValue(texturedLocation, name != 0);
-            glBindTexture(GL_TEXTURE_2D, name);
+            for (std::size_t k = 0; k < m_uniforms.scales.size(); ++k) {
+                m_program->setUniformValue(
+                    m_uniforms.scales[k], QVector2D(batch.layerScales[2 * k], batch.layerScales[2 * k + 1]));
+            }
             // The offset into the bound index buffer, as a pointer value.
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(batch.indexCount), GL_UNSIGNED_INT,
                 reinterpret_cast<const void*>( // NOLINT(performance-no-int-to-ptr)
@@ -626,5 +732,6 @@ void WorldRenderer::drawBatches(
             ++stats.drawCalls;
         }
     }
-    m_program->setUniformValue(m_belowCameraLocation, false);
+    m_program->setUniformValue(m_uniforms.belowCamera, false);
+    glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
 }

@@ -70,8 +70,15 @@ struct RenderMesh {
         /// Index into RenderMesh::shaders.
         std::uint32_t shader = 0;
         /// Per texture slot, an index into the model's texture list or -1
-        /// for textures the engine supplies (lightmaps, shadows).
+        /// for textures the engine supplies (lightmaps, shadows). Slot k
+        /// feeds the shader's sampler register k.
         std::vector<int> textureSlots;
+        /// The second group of shader constants (the first is empty in
+        /// every track model). For the blended ground shaders the first two
+        /// hold the texture scales of their layers: Blend_A and Blend_B in
+        /// the first (x, y and z, w), Blend_C and the splat map in the
+        /// second. Inferred from the data.
+        std::vector<QVector4D> constants;
     };
 
     /// World-space bounding box (Z already flipped).
@@ -90,6 +97,12 @@ struct RenderMesh {
     /// at byte `offset` and mapped through `material`'s offset and scale.
     /// Returns (0, 0) when the pair lies outside the vertex.
     static QVector2D texcoord(const Part& part, const Material& material, std::uint32_t vertex, int offset);
+    /// The texture coordinate pair at byte `offset` of vertex `vertex` as
+    /// stored, as 16-bit fractions of 1; (0, 0) outside the vertex.
+    static QVector2D rawTexcoord(const Part& part, std::uint32_t vertex, int offset);
+    /// The four bytes at byte `offset` of vertex `vertex` (a vertex colour),
+    /// or 0 outside the vertex.
+    static std::uint32_t colour(const Part& part, std::uint32_t vertex, int offset);
 };
 
 /// What the first bytes of a render model say about it, enough to index a

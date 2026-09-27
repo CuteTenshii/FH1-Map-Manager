@@ -23,6 +23,13 @@ constexpr int kPositionBytes = 12;
 constexpr int kInputBytes = 4;
 constexpr int kFirstOutputRegister = 0x30;
 constexpr int kUsageTexcoord = 5;
+constexpr int kUsageColour = 10;
+constexpr std::uint32_t kConstantTableHeaderBytes = 28;
+constexpr std::uint32_t kPixelShader30 = 0xFFFF0300;
+constexpr qsizetype kConstantRecordBytes = 20;
+constexpr std::uint16_t kSamplerRegisterSet = 3;
+constexpr std::uint32_t kMaxConstants = 1024;
+constexpr std::uint16_t kMaxSamplerRegister = 16;
 constexpr qsizetype kBundleHeaderBytes = 28;
 constexpr std::uint32_t kBundleSeparator = 0xFFFFFFFF;
 constexpr int kMaxBundleDimension = 4096;
@@ -189,6 +196,54 @@ TextureMipChain buildMipChain(const TextureSurface& top)
     return chain;
 }
 
+namespace {
+
+/// The NUL-terminated string at `offset`, or an empty one outside `data`.
+QString stringAt(const QByteArray& data, qsizetype offset)
+{
+    if (offset < 0 || offset >= data.size()) {
+        return {};
+    }
+    const qsizetype end = data.indexOf('\0', offset);
+    return QString::fromLatin1(data.mid(offset, (end < 0 ? data.size() : end) - offset));
+}
+
+/// Sampler names by register, from the first pixel shader 3.0 constant
+/// table (see readShaderLayout()); empty if there is none.
+std::vector<QString> readPixelSamplers(const QByteArray& fxobj)
+{
+    const QByteArray target("ps_3_0");
+    for (qsizetype header = 0; header + kConstantTableHeaderBytes <= fxobj.size(); header += 4) {
+        if (u32At(fxobj, header) != kConstantTableHeaderBytes || u32At(fxobj, header + 8) != kPixelShader30) {
+            continue;
+        }
+        const std::uint32_t count = u32At(fxobj, header + 12);
+        const std::uint32_t records = u32At(fxobj, header + 16);
+        const std::uint32_t targetOffset = u32At(fxobj, header + 24);
+        if (count > kMaxConstants || stringAt(fxobj, header + targetOffset) != QLatin1String(target)
+            || header + records + static_cast<qsizetype>(count) * kConstantRecordBytes > fxobj.size()) {
+            continue;
+        }
+        std::vector<QString> samplers;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const qsizetype record = header + records + static_cast<qsizetype>(i) * kConstantRecordBytes;
+            const std::uint16_t set = qFromBigEndian<std::uint16_t>(fxobj.constData() + record + 4);
+            const std::uint16_t reg = qFromBigEndian<std::uint16_t>(fxobj.constData() + record + 6);
+            if (set != kSamplerRegisterSet || reg >= kMaxSamplerRegister) {
+                continue;
+            }
+            if (samplers.size() <= reg) {
+                samplers.resize(static_cast<std::size_t>(reg) + 1);
+            }
+            samplers[reg] = stringAt(fxobj, header + u32At(fxobj, record));
+        }
+        return samplers;
+    }
+    return {};
+}
+
+} // namespace
+
 std::optional<ShaderLayout> readShaderLayout(const QByteArray& fxobj)
 {
     static const QByteArray kVersion("vs_3_0", 7);
@@ -220,13 +275,31 @@ std::optional<ShaderLayout> readShaderLayout(const QByteArray& fxobj)
         }
         const auto usage = static_cast<int>((entry >> 12) & 0xF);
         const auto usageIndex = static_cast<int>((entry >> 16) & 0xF);
+        const int offset = kPositionBytes + inputs * kInputBytes;
         if (usage == kUsageTexcoord && usageIndex == 0 && layout.texcoord0Offset < 0) {
-            layout.texcoord0Offset = kPositionBytes + inputs * kInputBytes;
+            layout.texcoord0Offset = offset;
+        } else if (usage == kUsageTexcoord && usageIndex == 1 && layout.texcoord1Offset < 0) {
+            layout.texcoord1Offset = offset;
+        } else if (usage == kUsageTexcoord && usageIndex == 2 && layout.texcoord2Offset < 0) {
+            layout.texcoord2Offset = offset;
+        } else if (usage == kUsageColour && usageIndex == 0 && layout.colourOffset < 0) {
+            layout.colourOffset = offset;
         }
         ++inputs;
     }
     layout.vertexBytes = kPositionBytes + inputs * kInputBytes;
+    layout.samplers = readPixelSamplers(fxobj);
     return layout;
+}
+
+int ShaderLayout::samplerRegister(const QString& name) const
+{
+    for (std::size_t r = 0; r < samplers.size(); ++r) {
+        if (samplers[r] == name) {
+            return static_cast<int>(r);
+        }
+    }
+    return -1;
 }
 
 /// The most recently read bundle packs, shared by the loading threads.
