@@ -76,6 +76,10 @@ public:
     /// clears the outline.
     void setHighlightedModel(std::optional<std::uint32_t> chunk);
     std::optional<std::uint32_t> highlightedModel() const { return m_highlightedModel; }
+    /// Height of the ground (terrain and roads, not props) at `x`, `z`, read
+    /// from the finest models of the loaded world, or nothing when no world
+    /// is loaded or none lies there.
+    std::optional<float> groundHeightAt(float x, float z) const;
     /// The model a click would pick at `position` (logical pixels): the one
     /// the view ray meets first among the loaded tiles' models.
     std::optional<fh1::PickHit> pickModelAt(const QPointF& position) const;

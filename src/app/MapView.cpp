@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 
 namespace {
 
@@ -152,8 +153,22 @@ void MapView::wheelEvent(QWheelEvent* event)
     event->accept();
 }
 
+void MapView::setGrabTest(std::function<bool(const QPointF&)> test)
+{
+    m_grabTest = std::move(test);
+    if (!m_grabTest && m_overGrabbable) {
+        m_overGrabbable = false;
+        viewport()->setCursor(Qt::OpenHandCursor);
+    }
+}
+
 void MapView::mousePressEvent(QMouseEvent* event)
 {
+    if (event->button() == Qt::LeftButton && m_grabTest && m_grabTest(mapToScene(event->position().toPoint()))) {
+        m_grabbing = true;
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton) {
         m_pressPos = event->position().toPoint();
         m_pressed = true;
@@ -163,12 +178,31 @@ void MapView::mousePressEvent(QMouseEvent* event)
 
 void MapView::mouseMoveEvent(QMouseEvent* event)
 {
-    emit cursorMoved(mapToScene(event->position().toPoint()));
+    const QPointF scenePos = mapToScene(event->position().toPoint());
+    emit cursorMoved(scenePos);
+    if (m_grabbing) {
+        emit grabMoved(scenePos, event->modifiers());
+        event->accept();
+        return;
+    }
+    if (event->buttons() == Qt::NoButton && m_grabTest) {
+        const bool over = m_grabTest(scenePos);
+        if (over != m_overGrabbable) {
+            m_overGrabbable = over;
+            viewport()->setCursor(over ? Qt::SizeAllCursor : Qt::OpenHandCursor);
+        }
+    }
     QGraphicsView::mouseMoveEvent(event);
 }
 
 void MapView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (m_grabbing && event->button() == Qt::LeftButton) {
+        m_grabbing = false;
+        emit grabReleased(mapToScene(event->position().toPoint()), event->modifiers());
+        event->accept();
+        return;
+    }
     QGraphicsView::mouseReleaseEvent(event);
     if (event->button() != Qt::LeftButton || !m_pressed) {
         return;

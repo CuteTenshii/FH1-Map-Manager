@@ -94,6 +94,15 @@ public:
     PointLayerItem(
         const fh1::Layer& layer, const fh1::MapCalibration& calibration, int layerIndex, double markerRadius);
 
+    /// Rings `features` as belonging with the highlighted feature, whether
+    /// their groups are shown or not; empty for none.
+    void setRelatedFeatures(std::vector<int> features);
+    const std::vector<int>& relatedFeatures() const { return m_related; }
+
+    /// Draws the features where they are now, after their positions or
+    /// headings changed; the features themselves must be the same.
+    void refreshPositions();
+
     /// Icons by fh1::Feature::icon key; features whose key is missing keep a
     /// coloured marker.
     void setIcons(const QHash<QString, QPixmap>& icons);
@@ -107,6 +116,8 @@ public:
 
 private:
     template <typename Visit> void forEachInRect(const QRectF& rect, Visit&& visit) const;
+    /// Scene positions, headings and the lookup grid, from the layer.
+    void buildGeometry();
     /// Marker radius and icon size in device pixels, shrinking when zoomed out.
     double markerRadiusAt(double scale) const;
     static double iconSizeAt(double scale);
@@ -126,6 +137,7 @@ private:
     int m_rows = 0;
     std::vector<std::vector<int>> m_cells;
     double m_radius;
+    std::vector<int> m_related;
 };
 
 /// Polyline and polygon features drawn with cosmetic (zoom-independent) pens.

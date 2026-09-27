@@ -7,8 +7,12 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace {
+
+/// Rings around features related to the highlighted one.
+const QColor kRelatedColour(0xFF, 0xE0, 0x70);
 
 double distanceToSegment(const QPointF& p, const QPointF& a, const QPointF& b)
 {
@@ -61,15 +65,39 @@ PointLayerItem::PointLayerItem(
     : LayerItem(layer, calibration, layerIndex)
     , m_radius(markerRadius)
 {
-    m_points.reserve(layer.features.size());
-    m_headings.reserve(layer.features.size());
+    buildGeometry();
+}
+
+void PointLayerItem::setRelatedFeatures(std::vector<int> features)
+{
+    if (features != m_related) {
+        m_related = std::move(features);
+        update();
+    }
+}
+
+void PointLayerItem::refreshPositions()
+{
+    prepareGeometryChange();
+    buildGeometry();
+    update();
+}
+
+void PointLayerItem::buildGeometry()
+{
+    m_points.clear();
+    m_headings.clear();
+    m_cells.clear();
+    m_bounds = QRectF();
+    m_points.reserve(m_layer.features.size());
+    m_headings.reserve(m_layer.features.size());
     // QRectF::united() ignores zero-size rectangles, so the bounds of a point
     // set are accumulated from explicit minima and maxima.
     double minX = std::numeric_limits<double>::max();
     double minY = std::numeric_limits<double>::max();
     double maxX = std::numeric_limits<double>::lowest();
     double maxY = std::numeric_limits<double>::lowest();
-    for (const fh1::Feature& feature : layer.features) {
+    for (const fh1::Feature& feature : m_layer.features) {
         const QPointF p = toScene(feature.position);
         m_points.push_back(p);
         minX = std::min(minX, p.x());
@@ -257,6 +285,23 @@ void PointLayerItem::paint(QPainter* painter, const QStyleOptionGraphicsItem* op
     for (const auto& [device, icon] : iconMarkers) {
         const QRectF target(device.x() - iconSize / 2.0, device.y() - iconSize / 2.0, iconSize, iconSize);
         painter->drawPixmap(target, m_iconPixmaps[static_cast<std::size_t>(icon)], QRectF());
+    }
+
+    // Related features are ringed even when their group is hidden, so that
+    // what belongs with the highlighted feature can always be seen.
+    const double relatedRing = radius + 4.0;
+    for (const int related : m_related) {
+        if (related < 0 || static_cast<std::size_t>(related) >= m_points.size()) {
+            continue;
+        }
+        const QPointF device = toDevice.map(m_points[static_cast<std::size_t>(related)]);
+        painter->setPen(QPen(QColor(0, 0, 0, 190), 3.0));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(device, relatedRing, relatedRing);
+        painter->setPen(QPen(kRelatedColour, 1.5, Qt::DashLine));
+        painter->drawEllipse(device, relatedRing, relatedRing);
+        painter->setPen(QPen(kRelatedColour, 4.0, Qt::SolidLine, Qt::RoundCap));
+        painter->drawPoint(device);
     }
 
     if (m_highlighted >= 0 && isFeatureShown(m_highlighted)) {

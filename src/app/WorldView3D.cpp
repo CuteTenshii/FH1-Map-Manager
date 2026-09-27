@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -222,6 +223,42 @@ void WorldView3D::setHighlightedModel(std::optional<std::uint32_t> chunk)
 {
     m_highlightedModel = chunk;
     update();
+}
+
+std::optional<float> WorldView3D::groundHeightAt(float x, float z) const
+{
+    if (!m_grid || !m_archive || !m_index) {
+        return std::nullopt;
+    }
+    std::vector<std::uint32_t> candidates;
+    float top = -std::numeric_limits<float>::infinity();
+    float bottom = std::numeric_limits<float>::infinity();
+    const auto& chunks = m_index->chunks();
+    for (const auto& tile : m_grid->tiles()) {
+        if (x < tile.boundsMin.x() || x > tile.boundsMax.x() || z < tile.boundsMin.z() || z > tile.boundsMax.z()) {
+            continue;
+        }
+        for (const std::uint32_t c : m_grid->chunksAt(tile, 0.0F)) {
+            // Props (trees, barriers, buildings) stand on the ground; the
+            // world geometry is the ground.
+            if (!chunks[c].placed) {
+                candidates.push_back(c);
+                top = std::max(top, chunks[c].boundsMax.y());
+                bottom = std::min(bottom, chunks[c].boundsMin.y());
+            }
+        }
+    }
+    if (candidates.empty()) {
+        return std::nullopt;
+    }
+    constexpr float kMargin = 10.0F;
+    const QVector3D origin(x, top + kMargin, z);
+    const std::optional<fh1::PickHit> hit = fh1::pickModel(
+        *m_archive, *m_index, candidates, origin, QVector3D(0.0F, -1.0F, 0.0F), top - bottom + 2.0F * kMargin);
+    if (!hit) {
+        return std::nullopt;
+    }
+    return hit->point.y();
 }
 
 std::optional<fh1::PickHit> WorldView3D::pickModelAt(const QPointF& position) const

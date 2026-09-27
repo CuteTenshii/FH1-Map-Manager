@@ -3,6 +3,8 @@
 #include <QGraphicsView>
 #include <QPoint>
 
+#include <functional>
+
 #include <vector>
 
 class LayerItem;
@@ -32,6 +34,12 @@ public:
     /// here, so clear the sources before deleting them.
     void setLabelSources(std::vector<const LayerItem*> sources);
     void setLabelsVisible(bool visible);
+
+    /// Decides whether the left button pressed at a scene position grabs
+    /// something to drag (reported by grabMoved() and grabReleased())
+    /// instead of panning the map; also shows a move cursor over such
+    /// places. None by default.
+    void setGrabTest(std::function<bool(const QPointF&)> test);
     bool labelsVisible() const { return m_labelsVisible; }
 
 signals:
@@ -40,6 +48,10 @@ signals:
     void clicked(const QPointF& scenePos);
     void contextMenuRequested(const QPointF& scenePos, const QPoint& globalPos);
     void zoomChanged(double zoom);
+    /// The grabbed thing was dragged to `scenePos`.
+    void grabMoved(const QPointF& scenePos, Qt::KeyboardModifiers modifiers);
+    /// The button was released at `scenePos`, ending the grab.
+    void grabReleased(const QPointF& scenePos, Qt::KeyboardModifiers modifiers);
 
 protected:
     void wheelEvent(QWheelEvent* event) override;
@@ -65,4 +77,7 @@ private:
     QPoint m_pressPos;
     bool m_pressed = false;
     bool m_fitted = true;
+    std::function<bool(const QPointF&)> m_grabTest;
+    bool m_grabbing = false;
+    bool m_overGrabbable = false;
 };
