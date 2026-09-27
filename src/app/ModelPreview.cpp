@@ -48,6 +48,11 @@ ModelPreview::ModelPreview(QWidget* parent)
 ModelPreview::~ModelPreview()
 {
     ++m_epoch;
+    // QOpenGLWidget destroys the context after this destructor; its
+    // aboutToBeDestroyed must not reach releaseGL() then.
+    if (context() != nullptr) {
+        disconnect(context(), &QOpenGLContext::aboutToBeDestroyed, this, &ModelPreview::releaseGL);
+    }
     releaseGL();
 }
 

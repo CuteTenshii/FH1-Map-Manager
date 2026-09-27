@@ -53,6 +53,11 @@ WorldView3D::~WorldView3D()
     ++m_epoch;
     m_pool.clear();
     m_pool.waitForDone();
+    // QOpenGLWidget destroys the context after this destructor; its
+    // aboutToBeDestroyed must not reach releaseGL() then.
+    if (context() != nullptr) {
+        disconnect(context(), &QOpenGLContext::aboutToBeDestroyed, this, &WorldView3D::releaseGL);
+    }
     releaseGL();
 }
 

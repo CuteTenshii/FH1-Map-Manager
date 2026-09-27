@@ -6,9 +6,11 @@
 #include "Loaders.h"
 #include "MainWindow.h"
 #include "MapView.h"
+#include "ModelPreview.h"
 #include "ProgressTask.h"
 #include "RaceTableModel.h"
 #include "RouteEditing.h"
+#include "WorldView3D.h"
 #include "XmlElements.h"
 
 #include <QAbstractButton>
@@ -22,6 +24,7 @@
 #include <QFileInfo>
 #include <QGraphicsScene>
 #include <QMessageBox>
+#include <QOpenGLWidget>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
@@ -653,6 +656,26 @@ private slots:
         QCOMPARE(saved.transforms.size(), std::size_t{2});
         QVERIFY(!fh1::routeTransformIndex(saved, QStringLiteral("start_location_00")).has_value());
         QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void glWidgetsCloseCleanly()
+    {
+        // Regression: QOpenGLWidget destroys its context after the derived
+        // destructor has run, and the context's aboutToBeDestroyed then
+        // called releaseGL() on a half-destroyed object (a Qt assertion in
+        // debug builds).
+        for (const bool world : {false, true}) {
+            QOpenGLWidget* widget
+                = world ? static_cast<QOpenGLWidget*>(new WorldView3D) : static_cast<QOpenGLWidget*>(new ModelPreview);
+            widget->resize(200, 200);
+            widget->show();
+            QVERIFY(QTest::qWaitForWindowExposed(widget));
+            if (!QTest::qWaitFor([widget] { return widget->isValid(); }, 2000)) {
+                delete widget;
+                QSKIP("No OpenGL on this platform");
+            }
+            delete widget;
+        }
     }
 
     void workRunsBehindAProgressDialog()
