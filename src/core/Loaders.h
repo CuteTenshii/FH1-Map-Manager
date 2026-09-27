@@ -25,10 +25,15 @@ namespace loaders {
 Layer placements(const QByteArray& data, const QString& layerId, const QString& title, const QString& source,
     const QString& typeAttribute);
 
-/// Ribbon_NN/TrackRouteNNN.xml: named transforms such as start grids. Appends
-/// one point feature per transform, grouped by transformKind() of its name;
-/// `routeLabel` (the file's base name) is kept as a property.
-void appendTrackRoute(const QByteArray& data, const QString& routeLabel, Layer& layer);
+/// Ribbon_NN/TrackRouteNNN.xml: `<NamedTransform name>` elements, some with
+/// a `width`, each holding a `<Transform>` with pos.x/y/z and facing.x/y/z
+/// attributes. The result's routeId is left for the caller to set.
+RaceRoute raceRoute(const QByteArray& data, const QString& source);
+
+/// Appends one point feature per transform of `route`, grouped by
+/// transformKind() of its name; `routeLabel` (the file's base name) is kept
+/// as a property.
+void appendTrackRoute(const RaceRoute& route, const QString& routeLabel, Layer& layer);
 
 /// Ribbon_NN/ParticleEmitters.xml.
 Layer particleEmitters(const QByteArray& data, const QString& source);

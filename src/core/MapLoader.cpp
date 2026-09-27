@@ -4,6 +4,7 @@
 #include "ForzaZip.h"
 #include "GameDatabase.h"
 #include "Loaders.h"
+#include "Races.h"
 #include "StringTable.h"
 #include "XboxTexture.h"
 
@@ -189,18 +190,20 @@ void loadIcons(const Context& ctx)
     }
 }
 
-void loadAiRoutes(const Context& ctx)
+/// Adds the AI racing lines as a layer and returns them by route id.
+QHash<int, std::vector<QVector3D>> loadAiRoutes(const Context& ctx)
 {
     ctx.step(QStringLiteral("Reading AI routes"));
+    QHash<int, std::vector<QVector3D>> lines;
     const QString archivePath = ctx.install().resolve(QStringLiteral("aiopenworld.zip"));
     if (archivePath.isEmpty()) {
         ctx.warn(QStringLiteral("aiopenworld.zip not found; AI routes are not shown"));
-        return;
+        return lines;
     }
     ForzaZip zip;
     if (!zip.open(archivePath)) {
         ctx.warn(zip.errorString());
-        return;
+        return lines;
     }
     const QHash<int, GameDatabase::Route> routes = ctx.database().routes(ctx.track());
 
@@ -241,6 +244,7 @@ void loadAiRoutes(const Context& ctx)
             if (!route.devName.isEmpty()) {
                 feature.properties.prepend({QStringLiteral("Database name"), route.devName});
             }
+            lines.insert(routeId, feature.shapes.front());
             layer.features.push_back(std::move(feature));
         } catch (const LoadError& e) {
             ctx.warn(QString::fromStdString(e.what()));
@@ -249,8 +253,11 @@ void loadAiRoutes(const Context& ctx)
     if (!layer.features.empty()) {
         ctx.map().layers.push_back(std::move(layer));
     }
+    return lines;
 }
 
+/// Reads every TrackRouteNNN.xml of the track into MapData::raceRoutes and
+/// shows their transforms as a layer.
 void loadTrackRoutes(const Context& ctx)
 {
     ctx.step(QStringLiteral("Reading track route transforms"));
@@ -264,6 +271,8 @@ void loadTrackRoutes(const Context& ctx)
     layer.source = QStringLiteral("Ribbon_00/TrackRouteNNN.xml");
     layer.kind = FeatureKind::Point;
 
+    static const QRegularExpression routeFile(
+        QStringLiteral("^TrackRoute(\\d+)\\.xml$"), QRegularExpression::CaseInsensitiveOption);
     const QDir dir(ribbon);
     const QStringList files
         = dir.entryList({QStringLiteral("TrackRoute*.xml")}, QDir::Files, QDir::Name | QDir::IgnoreCase);
@@ -274,13 +283,55 @@ void loadTrackRoutes(const Context& ctx)
             continue;
         }
         try {
-            loaders::appendTrackRoute(handle.readAll(), QFileInfo(file).completeBaseName(), layer);
+            RaceRoute route = loaders::raceRoute(handle.readAll(), QStringLiteral("Ribbon_00/") + file);
+            loaders::appendTrackRoute(route, QFileInfo(file).completeBaseName(), layer);
+            const QRegularExpressionMatch match = routeFile.match(file);
+            if (match.hasMatch()) {
+                route.routeId = match.captured(1).toInt();
+                ctx.map().raceRoutes.push_back(std::move(route));
+            }
         } catch (const LoadError& e) {
             ctx.warn(QString::fromStdString(e.what()));
         }
     }
     if (!layer.features.empty()) {
         ctx.map().layers.push_back(std::move(layer));
+    }
+}
+
+/// Lists the track's race events, linked to their routes and racing lines.
+void loadRaces(const Context& ctx, const QHash<int, std::vector<QVector3D>>& racingLines)
+{
+    ctx.step(QStringLiteral("Listing race events"));
+    MapData& map = ctx.map();
+    QHash<int, int> routeIndex;
+    for (std::size_t i = 0; i < map.raceRoutes.size(); ++i) {
+        RaceRoute& route = map.raceRoutes[i];
+        routeIndex.insert(route.routeId, static_cast<int>(i));
+        route.racingLine = racingLines.value(route.routeId);
+    }
+    const auto text = [&ctx](const QString& table, const QString& reference, const QString& fallback) {
+        const QString resolved = ctx.strings().resolve(table, reference);
+        return resolved.isEmpty() ? fallback : resolved;
+    };
+    for (const GameDatabase::RaceRow& row : ctx.database().races(ctx.track())) {
+        Race race;
+        race.eventId = row.eventId;
+        race.name = text(QStringLiteral("Events.str"), row.name, row.eventId);
+        race.type = text(QStringLiteral("CareerEventTypes.str"), row.type, {});
+        race.carClass = text(QStringLiteral("CarClasses.str"), row.carClass, {});
+        race.routeName = text(QStringLiteral("Tracks.str"), row.routeName, {});
+        race.routeId = row.routeId;
+        race.laps = row.laps;
+        race.length = row.length;
+        race.prize = row.prize;
+        race.route = routeIndex.value(row.routeId, -1);
+        if (race.route < 0) {
+            ctx.warn(QStringLiteral("race %1 runs on route %2, which has no TrackRoute file")
+                    .arg(race.eventId)
+                    .arg(race.routeId));
+        }
+        map.races.push_back(std::move(race));
     }
 }
 
@@ -502,7 +553,7 @@ MapData MapLoader::load(const GameInstall& install, const QString& trackFolder, 
         }
     }
 
-    loadAiRoutes(ctx);
+    const QHash<int, std::vector<QVector3D>> racingLines = loadAiRoutes(ctx);
 
     ctx.step(QStringLiteral("Reading the road network"));
     ctx.addLayer([&] {
@@ -528,6 +579,7 @@ MapData MapLoader::load(const GameInstall& install, const QString& trackFolder, 
     });
 
     loadTrackRoutes(ctx);
+    loadRaces(ctx, racingLines);
 
     ctx.step(QStringLiteral("Reading gameplay objects"));
     if (Layer* gameplay = ctx.addLayer([&] {

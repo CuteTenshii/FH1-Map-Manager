@@ -4,6 +4,7 @@
 #include "ForzaZip.h"
 #include "GameInstall.h"
 #include "MapLoader.h"
+#include "Races.h"
 #include "RenderMesh.h"
 #include "ScatterSet.h"
 #include "TrackPlacements.h"
@@ -179,6 +180,54 @@ private slots:
             QVERIFY(!mesh.parts.empty());
             QVERIFY2(!mesh.materialTable.empty(), qPrintable(entry.name));
         }
+    }
+
+    void racesAndRoutes()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        const fh1::MapData map = fh1::MapLoader::load(install, QStringLiteral("colorado"));
+        // 119 events, less the free-roam session; each has one race.
+        QCOMPARE(map.races.size(), std::size_t{118});
+        QCOMPARE(map.raceRoutes.size(), std::size_t{243});
+        for (const fh1::Race& race : map.races) {
+            QVERIFY2(race.route >= 0, qPrintable(race.eventId));
+            QVERIFY2(!race.type.isEmpty() && !race.carClass.isEmpty(), qPrintable(race.eventId));
+        }
+
+        const auto find = [&map](const QString& eventId) -> const fh1::Race* {
+            for (const fh1::Race& race : map.races) {
+                if (race.eventId == eventId) {
+                    return &race;
+                }
+            }
+            return nullptr;
+        };
+        // A festival circuit with an AI racing line: its route id is its
+        // track id.
+        const fh1::Race* rush = find(QStringLiteral("FR02"));
+        QVERIFY(rush != nullptr);
+        QCOMPARE(rush->name, QStringLiteral("Recaro Rush"));
+        QCOMPARE(rush->type, QStringLiteral("Festival Circuit Race"));
+        QCOMPARE(rush->carClass, QStringLiteral("B"));
+        QCOMPARE(rush->laps, 2);
+        QCOMPARE(rush->length, 2467);
+        QCOMPARE(rush->prize, 4000);
+        const fh1::RaceRoute& rushRoute = map.raceRoutes[static_cast<std::size_t>(rush->route)];
+        QCOMPARE(rushRoute.routeId, 96);
+        QVERIFY(!rushRoute.racingLine.empty());
+        QCOMPARE(fh1::routePoints(rushRoute, fh1::RoutePointKind::StartSlot).size(), std::size_t{8});
+
+        // A street race on track 1001, whose route is 12; it has
+        // checkpoints but no racing line.
+        const fh1::Race* plains = find(QStringLiteral("STREET_PLNS_005"));
+        QVERIFY(plains != nullptr);
+        QCOMPARE(plains->routeId, 12);
+        const fh1::RaceRoute& plainsRoute = map.raceRoutes[static_cast<std::size_t>(plains->route)];
+        QVERIFY(plainsRoute.racingLine.empty());
+        const std::vector<fh1::Layer> overlay = fh1::raceOverlay(*plains, plainsRoute);
+        QCOMPARE(overlay.size(), std::size_t{2});
+        QVERIFY(overlay[0].features.front().shapes.front().size() > 2);
     }
 
     void propPlacements()

@@ -40,6 +40,8 @@ add_library(fh1core STATIC
     src/core/MapLoader.h
     src/core/PvsFile.cpp
     src/core/PvsFile.h
+    src/core/Races.cpp
+    src/core/Races.h
     src/core/RenderMesh.cpp
     src/core/RenderMesh.h
     src/core/ScatterSet.cpp

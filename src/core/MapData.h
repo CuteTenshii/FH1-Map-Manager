@@ -2,6 +2,7 @@
 
 #include "MapCalibration.h"
 
+#include <QColor>
 #include <QHash>
 #include <QImage>
 #include <QList>
@@ -46,6 +47,56 @@ struct Layer {
     QString source;
     FeatureKind kind = FeatureKind::Point;
     std::vector<Feature> features;
+    /// Colours for groups that should not take the viewer's palette colour.
+    QHash<QString, QColor> groupColours;
+};
+
+/// One named transform of a race route file.
+struct RouteTransform {
+    QString name;
+    QVector3D position;
+    /// Unit heading.
+    QVector3D facing;
+    /// Metres across, for the transforms that carry a `width` attribute
+    /// (the finish trigger); 0 for the others.
+    float width = 0.0F;
+};
+
+/// A race route: tracks/<track>/Ribbon_00/TrackRouteNNN.xml, whose NNN is
+/// the route's Tracks.RouteId in gamedb. It holds the start grid,
+/// checkpoints, waypoints and finish of the races run on the route.
+struct RaceRoute {
+    int routeId = -1;
+    /// Where the transforms came from, e.g. "Ribbon_00/TrackRoute096.xml".
+    QString source;
+    /// In file order.
+    std::vector<RouteTransform> transforms;
+    /// The AI racing line of the route from aiopenworld.zip, or empty when
+    /// the game ships none for it.
+    std::vector<QVector3D> racingLine;
+};
+
+/// A race event of the track: a gamedb Events row with its Races row.
+struct Race {
+    /// Events.HorizonEventID, e.g. "FR05"; the game's objects and props of
+    /// the event are named after it.
+    QString eventId;
+    /// From the game's text; the event ID when the text is missing.
+    QString name;
+    /// CareerEventTypes name, e.g. "Festival Circuit Race".
+    QString type;
+    /// Name of the car class the event is for, e.g. "B".
+    QString carClass;
+    /// Display name of the route, e.g. "Beaumont Circuit".
+    QString routeName;
+    int laps = 1;
+    /// Length of one lap or of the whole sprint, in metres (Tracks.Length).
+    int length = 0;
+    /// Credits for winning.
+    int prize = 0;
+    int routeId = -1;
+    /// Index into MapData::raceRoutes, or -1 when the route file is missing.
+    int route = -1;
 };
 
 /// Everything the viewer shows for one track.
@@ -57,6 +108,10 @@ struct MapData {
     /// worldCalibration() when the track has no known background image.
     MapCalibration calibration = worldCalibration();
     std::vector<Layer> layers;
+    /// The track's race events, in gamedb order.
+    std::vector<Race> races;
+    /// The routes the races run on.
+    std::vector<RaceRoute> raceRoutes;
     /// The in-game map's icons, keyed by its `activity_type` names.
     QHash<QString, QImage> icons;
     /// Non-fatal problems met while loading, e.g. a missing optional file.

@@ -78,6 +78,39 @@ QHash<QString, GameDatabase::Event> GameDatabase::events()
     return result;
 }
 
+std::vector<GameDatabase::RaceRow> GameDatabase::races(const QString& mediaName)
+{
+    std::vector<RaceRow> result;
+    if (!m_open) {
+        return result;
+    }
+    QSqlQuery query(QSqlDatabase::database(m_connection, false));
+    query.prepare(QStringLiteral(
+        "SELECT e.HorizonEventID, e.Name, ty.Name, cl.DisplayName, t.DisplayName, t.RouteId, r.NumLaps, "
+        "t.Length, e.CashPrize FROM Races r JOIN Events e ON e.Id = r.EventId JOIN Tracks t ON t.id = r.TrackId "
+        "LEFT JOIN CareerEventTypes ty ON ty.id = e.CareerTypeId LEFT JOIN CarClasses cl ON cl.Id = e.TargetClass "
+        "WHERE lower(t.MediaName) = lower(?) AND e.CareerEventStyle <> 0 ORDER BY e.Id, r.RaceNumber"));
+    query.addBindValue(mediaName);
+    if (!query.exec()) {
+        m_error = QStringLiteral("race query failed: %1").arg(query.lastError().text());
+        return result;
+    }
+    while (query.next()) {
+        RaceRow row;
+        row.eventId = query.value(0).toString();
+        row.name = query.value(1).toString();
+        row.type = query.value(2).toString();
+        row.carClass = query.value(3).toString();
+        row.routeName = query.value(4).toString();
+        row.routeId = query.value(5).toInt();
+        row.laps = query.value(6).toInt();
+        row.length = query.value(7).toInt();
+        row.prize = query.value(8).toInt();
+        result.push_back(std::move(row));
+    }
+    return result;
+}
+
 std::optional<GameDatabase::Car> GameDatabase::car(const QString& carId)
 {
     bool ok = false;

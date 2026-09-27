@@ -2,6 +2,7 @@
 #include "Loaders.h"
 #include "MapCalibration.h"
 #include "MapLoader.h"
+#include "Races.h"
 
 #include <QDir>
 #include <QFile>
@@ -123,6 +124,9 @@ const char* const kTrackRoute = R"(<TrackRoute>
 		<NamedTransform name='anim_couple_01_01'>
 			<Transform pos.x='-3892.29' pos.y='-0.334236' pos.z='837.49' facing.x='-0.999991' facing.y='0.0' facing.z='-0.00428313'/>
 		</NamedTransform>
+		<NamedTransform name='end_race_cannon_trigger' width='50.0'>
+			<Transform pos.x='-3352.49' pos.y='3.65841' pos.z='-1499.24' facing.x='-0.981728' facing.y='0.0' facing.z='-0.190288'/>
+		</NamedTransform>
 	</NamedTransforms>
 </TrackRoute>
 )";
@@ -215,16 +219,115 @@ private slots:
     {
         fh1::Layer layer;
         layer.source = QStringLiteral("Ribbon_00");
-        fh1::loaders::appendTrackRoute(kTrackRoute, QStringLiteral("TrackRoute000"), layer);
-        QCOMPARE(layer.features.size(), std::size_t{2});
+        const fh1::RaceRoute route = fh1::loaders::raceRoute(kTrackRoute, QStringLiteral("TrackRoute000.xml"));
+        QCOMPARE(route.transforms.size(), std::size_t{3});
+        QCOMPARE(route.transforms[0].name, QStringLiteral("start_location_00"));
+        QCOMPARE(route.transforms[0].width, 0.0F);
+        QCOMPARE(route.transforms[2].width, 50.0F);
+        QVERIFY(qFuzzyCompare(route.transforms[2].position.x(), -3352.49F));
+        fh1::loaders::appendTrackRoute(route, QStringLiteral("TrackRoute000"), layer);
+        QCOMPARE(layer.features.size(), std::size_t{3});
         QCOMPARE(layer.features[0].group, QStringLiteral("start_location"));
         QCOMPARE(layer.features[1].group, QStringLiteral("anim_couple"));
+        QCOMPARE(layer.features[2].group, QStringLiteral("end_race_cannon_trigger"));
         QVERIFY(qFuzzyCompare(layer.features[0].forward.z(), -0.949661F));
         bool hasRouteFile = false;
         for (const auto& property : layer.features[0].properties) {
             hasRouteFile |= property.second == QLatin1String("TrackRoute000");
         }
         QVERIFY(hasRouteFile);
+    }
+
+    void trackRouteErrors()
+    {
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError,
+            fh1::loaders::raceRoute("<R><NamedTransform name='a' width='wide'><Transform pos.x='1' pos.y='2' "
+                                    "pos.z='3' facing.x='1' facing.y='0' facing.z='0'/></NamedTransform></R>",
+                {}));
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError,
+            fh1::loaders::raceRoute("<R><NamedTransform name='a'><Transform pos.x='1'/></NamedTransform></R>", {}));
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::loaders::raceRoute("<R><NamedTransform", {}));
+    }
+
+    void routePointKinds()
+    {
+        QCOMPARE(fh1::routePointKind(QStringLiteral("start_location_03")), fh1::RoutePointKind::StartSlot);
+        QCOMPARE(fh1::routePointKind(QStringLiteral("route_checkpoint_12")), fh1::RoutePointKind::Checkpoint);
+        QCOMPARE(fh1::routePointKind(QStringLiteral("route_checkpoint_indicator_12b")),
+            fh1::RoutePointKind::CheckpointMarker);
+        QCOMPARE(fh1::routePointKind(QStringLiteral("end_race_cannon_trigger")), fh1::RoutePointKind::Finish);
+        QCOMPARE(fh1::routePointKind(QStringLiteral("end_race_cannon_left_02")), fh1::RoutePointKind::FinishCannon);
+        QCOMPARE(fh1::routePointKind(QStringLiteral("mission_photo_01")), fh1::RoutePointKind::Other);
+    }
+
+    void raceOverlayWithoutRacingLine()
+    {
+        const auto transform = [](const QString& name, float x, float z) {
+            return fh1::RouteTransform{name, QVector3D(x, 0, z), QVector3D(0, 0, 1), 0.0F};
+        };
+        fh1::RaceRoute route;
+        route.source = QStringLiteral("Ribbon_00/TrackRoute012.xml");
+        // Out of order in the file, as numbers past 9 sort after 1 by name.
+        route.transforms = {transform(QStringLiteral("route_checkpoint_10"), 0, 100),
+            transform(QStringLiteral("start_location_01"), 0, -5),
+            transform(QStringLiteral("route_checkpoint_2"), 0, 50),
+            transform(QStringLiteral("start_location_00"), 0, 0), transform(QStringLiteral("route_waypoint_00"), 9, 9),
+            transform(QStringLiteral("anim_couple_01"), 7, 7)};
+        fh1::RouteTransform finish = transform(QStringLiteral("end_race_cannon_trigger"), 0, 120);
+        finish.width = 20.0F;
+        route.transforms.push_back(finish);
+
+        const std::vector<const fh1::RouteTransform*> checkpoints
+            = fh1::routePoints(route, fh1::RoutePointKind::Checkpoint);
+        QCOMPARE(checkpoints.size(), std::size_t{2});
+        QCOMPARE(checkpoints[0]->name, QStringLiteral("route_checkpoint_2"));
+
+        fh1::Race race;
+        race.eventId = QStringLiteral("STREET_PLNS_005");
+        race.name = QStringLiteral("Plains Run");
+        const std::vector<fh1::Layer> layers = fh1::raceOverlay(race, route);
+        QCOMPARE(layers.size(), std::size_t{2});
+        const fh1::Layer& path = layers[0];
+        QCOMPARE(path.id, QStringLiteral("racepath"));
+        QCOMPARE(path.kind, fh1::FeatureKind::Polyline);
+        QCOMPARE(path.features.size(), std::size_t{2});
+        // Pole position, the checkpoints in order (not the waypoint), finish.
+        const std::vector<QVector3D> expected{
+            QVector3D(0, 0, 0), QVector3D(0, 0, 50), QVector3D(0, 0, 100), QVector3D(0, 0, 120)};
+        QCOMPARE(path.features[0].shapes.front(), expected);
+        // The finish line spans the trigger's width across its heading.
+        const std::vector<QVector3D>& finishLine = path.features[1].shapes.front();
+        QCOMPARE(finishLine.size(), std::size_t{2});
+        QCOMPARE((finishLine[1] - finishLine[0]).length(), 20.0F);
+        QCOMPARE(finishLine[0].z(), 120.0F);
+        QVERIFY(path.groupColours.contains(QStringLiteral("Route")));
+
+        const fh1::Layer& points = layers[1];
+        QCOMPARE(points.id, QStringLiteral("racepoints"));
+        QStringList labels;
+        for (const fh1::Feature& feature : points.features) {
+            labels.append(feature.label);
+        }
+        QCOMPARE(labels,
+            (QStringList{QStringLiteral("Start"), QString(), QStringLiteral("Checkpoint 1"),
+                QStringLiteral("Checkpoint 2"), QString(), QStringLiteral("Finish")}));
+        QCOMPARE(points.features[1].group, QStringLiteral("Start grid"));
+        QCOMPARE(points.features[4].group, QStringLiteral("Waypoints"));
+    }
+
+    void raceOverlayFollowsRacingLine()
+    {
+        fh1::RaceRoute route;
+        route.transforms = {{QStringLiteral("start_location_00"), QVector3D(1, 0, 1), QVector3D(1, 0, 0), 0.0F},
+            {QStringLiteral("route_waypoint_00"), QVector3D(50, 0, 1), QVector3D(1, 0, 0), 0.0F}};
+        route.racingLine = {QVector3D(0, 0, 0), QVector3D(10, 0, 0), QVector3D(20, 0, 5)};
+        const std::vector<fh1::Layer> layers = fh1::raceOverlay(fh1::Race{}, route);
+        QCOMPARE(layers.size(), std::size_t{2});
+        QCOMPARE(layers[0].features.size(), std::size_t{1});
+        QCOMPARE(layers[0].features[0].shapes.front(), route.racingLine);
+
+        // A route file with nothing to draw adds no layers.
+        QVERIFY(fh1::raceOverlay(fh1::Race{}, fh1::RaceRoute{}).empty());
     }
 
     void transformKinds()
@@ -376,6 +479,12 @@ private slots:
                 QStringLiteral("gameobjs")}));
         QVERIFY(map.background.isNull());
         QVERIFY(!steps.isEmpty());
+        // The route file is kept by its number; without a database there
+        // are no races to run on it.
+        QCOMPARE(map.raceRoutes.size(), std::size_t{1});
+        QCOMPARE(map.raceRoutes[0].routeId, 0);
+        QCOMPARE(map.raceRoutes[0].source, QStringLiteral("Ribbon_00/TrackRoute000.xml"));
+        QVERIFY(map.races.empty());
 
         // The broken zones file and the missing disc-wide files (AI archive,
         // database, string tables, icons) are reported without stopping the

@@ -168,33 +168,55 @@ Layer placements(const QByteArray& data, const QString& layerId, const QString& 
     return layer;
 }
 
-void appendTrackRoute(const QByteArray& data, const QString& routeLabel, Layer& layer)
+RaceRoute raceRoute(const QByteArray& data, const QString& source)
 {
-    const QString source = layer.source + QLatin1Char('/') + routeLabel;
+    RaceRoute route;
+    route.source = source;
     QXmlStreamReader xml(data);
     QString transformName;
+    float width = 0.0F;
     while (!xml.atEnd()) {
         if (xml.readNext() != QXmlStreamReader::StartElement) {
             continue;
         }
         if (xml.name() == QLatin1String("NamedTransform")) {
             transformName = xml.attributes().value(QLatin1String("name")).toString();
+            width = xml.attributes().hasAttribute(QLatin1String("width"))
+                ? attributeFloat(xml, source, QStringLiteral("width"))
+                : 0.0F;
         } else if (xml.name() == QLatin1String("Transform")) {
-            Feature feature;
-            feature.name = transformName;
-            feature.group = transformKind(transformName);
-            feature.position = attributeVector(xml, source, QStringLiteral("pos."));
-            feature.forward = attributeVector(xml, source, QStringLiteral("facing."));
-            feature.properties = {
-                {QStringLiteral("Route file"), routeLabel},
-                {QStringLiteral("Name"), transformName},
-                {QStringLiteral("Position"), formatVector(feature.position)},
-                {QStringLiteral("Facing"), formatVector(feature.forward)},
-            };
-            layer.features.push_back(std::move(feature));
+            RouteTransform transform;
+            transform.name = transformName;
+            transform.position = attributeVector(xml, source, QStringLiteral("pos."));
+            transform.facing = attributeVector(xml, source, QStringLiteral("facing."));
+            transform.width = width;
+            route.transforms.push_back(std::move(transform));
         }
     }
     checkXml(xml, source);
+    return route;
+}
+
+void appendTrackRoute(const RaceRoute& route, const QString& routeLabel, Layer& layer)
+{
+    for (const RouteTransform& transform : route.transforms) {
+        Feature feature;
+        feature.name = transform.name;
+        feature.group = transformKind(transform.name);
+        feature.position = transform.position;
+        feature.forward = transform.facing;
+        feature.properties = {
+            {QStringLiteral("Route file"), routeLabel},
+            {QStringLiteral("Name"), transform.name},
+            {QStringLiteral("Position"), formatVector(transform.position)},
+            {QStringLiteral("Facing"), formatVector(transform.facing)},
+        };
+        if (transform.width > 0.0F) {
+            feature.properties.append(
+                {QStringLiteral("Width"), QStringLiteral("%1 m").arg(static_cast<double>(transform.width))});
+        }
+        layer.features.push_back(std::move(feature));
+    }
 }
 
 Layer particleEmitters(const QByteArray& data, const QString& source)

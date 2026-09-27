@@ -4,6 +4,7 @@
 #include <QString>
 
 #include <optional>
+#include <vector>
 
 namespace fh1 {
 
@@ -22,6 +23,23 @@ public:
         QString name;
         QString shortName;
         QString description;
+    };
+    /// A race event, joined from Events, Races, Tracks, CareerEventTypes and
+    /// CarClasses. Text columns are string-table references.
+    struct RaceRow {
+        QString eventId;
+        /// Events.Name (Events.str).
+        QString name;
+        /// CareerEventTypes.Name (CareerEventTypes.str).
+        QString type;
+        /// CarClasses.DisplayName (CarClasses.str).
+        QString carClass;
+        /// Tracks.DisplayName (Tracks.str).
+        QString routeName;
+        int routeId = -1;
+        int laps = 1;
+        int length = 0;
+        int prize = 0;
     };
     /// A car's naming parts; the game shows "<year> <make> <model>".
     struct Car {
@@ -45,6 +63,9 @@ public:
     QHash<int, Route> routes(const QString& mediaName);
     /// Career events by HorizonEventID (e.g. "FR05").
     QHash<QString, Event> events();
+    /// The race events run on the track whose MediaName is `mediaName`, in
+    /// event order; the free-roam session (CareerEventStyle 0) is left out.
+    std::vector<RaceRow> races(const QString& mediaName);
     /// Naming parts of a Data_Car row, or nothing if the id is unknown.
     std::optional<Car> car(const QString& carId);
 
