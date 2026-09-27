@@ -3,9 +3,11 @@
 
 #include "ForzaZip.h"
 #include "GameInstall.h"
+#include "Loaders.h"
 #include "MapLoader.h"
 #include "Races.h"
 #include "RenderMesh.h"
+#include "RouteEditing.h"
 #include "ScatterSet.h"
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
@@ -14,6 +16,7 @@
 
 #include <QTest>
 
+#include <QDir>
 #include <QFile>
 #include <QSet>
 #include <QVector2D>
@@ -228,6 +231,41 @@ private slots:
         const std::vector<fh1::Layer> overlay = fh1::raceOverlay(*plains, plainsRoute);
         QCOMPARE(overlay.size(), std::size_t{2});
         QVERIFY(overlay[0].features.front().shapes.front().size() > 2);
+    }
+
+    void routesSaveUnchanged()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        const fh1::MapData map = fh1::MapLoader::load(install, QStringLiteral("colorado"));
+        QCOMPARE(map.raceRoutes.size(), std::size_t{243});
+        for (const fh1::RaceRoute& route : map.raceRoutes) {
+            QFile file(QDir(install.mediaPath()).filePath(route.mediaPath));
+            QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(route.mediaPath));
+            const QByteArray original = file.readAll();
+            QVERIFY2(fh1::writeRaceRoute(route) == original, qPrintable(route.mediaPath));
+
+            // Every transform written anew reads back the same: the number
+            // format loses nothing the file held. The game's own files come
+            // out byte for byte; TrackRoute001, laid out by hand, does not.
+            fh1::RaceRoute rewritten = route;
+            for (fh1::RouteTransform& transform : rewritten.transforms) {
+                transform.edited = true;
+            }
+            const QByteArray written = fh1::writeRaceRoute(rewritten);
+            if (!route.mediaPath.endsWith(QLatin1String("TrackRoute001.xml"))) {
+                QVERIFY2(written == original, qPrintable(route.mediaPath));
+            }
+            const fh1::RaceRoute reread = fh1::loaders::raceRoute(written, route.source);
+            QCOMPARE(reread.transforms.size(), route.transforms.size());
+            for (std::size_t i = 0; i < route.transforms.size(); ++i) {
+                QCOMPARE(reread.transforms[i].name, route.transforms[i].name);
+                QCOMPARE(reread.transforms[i].position, route.transforms[i].position);
+                QCOMPARE(reread.transforms[i].facing, route.transforms[i].facing);
+                QCOMPARE(reread.transforms[i].width, route.transforms[i].width);
+                QCOMPARE(reread.transforms[i].attributes, route.transforms[i].attributes);
+            }
+        }
     }
 
     void propPlacements()

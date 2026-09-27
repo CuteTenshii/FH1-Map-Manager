@@ -14,21 +14,6 @@ const QColor kCheckpointColour(0x4E, 0x9B, 0xFF);
 const QColor kWaypointColour(0xB5, 0xB5, 0xFF);
 const QColor kFinishColour(0xFF, 0x5A, 0x5F);
 
-/// The number a transform name ends with ("route_checkpoint_12" -> 12,
-/// "route_checkpoint_indicator_12b" -> 12), or -1.
-int trailingNumber(const QString& name)
-{
-    const qsizetype underscore = name.lastIndexOf(QLatin1Char('_'));
-    qsizetype end = underscore + 1;
-    while (end < name.size() && name.at(end).isDigit()) {
-        ++end;
-    }
-    if (end == underscore + 1) {
-        return -1;
-    }
-    return name.mid(underscore + 1, end - underscore - 1).toInt();
-}
-
 QString formatPoint(const QVector3D& v)
 {
     return QStringLiteral("%1, %2, %3")
@@ -53,6 +38,19 @@ Feature pointFeature(const RouteTransform& transform, const QString& group, cons
 }
 
 } // namespace
+
+int routePointNumber(const QString& transformName)
+{
+    const qsizetype underscore = transformName.lastIndexOf(QLatin1Char('_'));
+    qsizetype end = underscore + 1;
+    while (end < transformName.size() && transformName.at(end).isDigit()) {
+        ++end;
+    }
+    if (end == underscore + 1) {
+        return -1;
+    }
+    return transformName.mid(underscore + 1, end - underscore - 1).toInt();
+}
 
 RoutePointKind routePointKind(const QString& transformName)
 {
@@ -85,7 +83,7 @@ std::vector<const RouteTransform*> routePoints(const RaceRoute& route, RoutePoin
         }
     }
     std::stable_sort(points.begin(), points.end(), [](const RouteTransform* a, const RouteTransform* b) {
-        return std::pair(trailingNumber(a->name), a->name) < std::pair(trailingNumber(b->name), b->name);
+        return std::pair(routePointNumber(a->name), a->name) < std::pair(routePointNumber(b->name), b->name);
     });
     return points;
 }

@@ -3,6 +3,7 @@
 #include "MapCalibration.h"
 #include "MapLoader.h"
 #include "Races.h"
+#include "RouteEditing.h"
 
 #include <QDir>
 #include <QFile>
@@ -131,6 +132,57 @@ const char* const kTrackRoute = R"(<TrackRoute>
 </TrackRoute>
 )";
 
+/// A route file in the game's layout, CRLF line ends, with a comment
+/// between two transforms.
+QByteArray checkpointRoute()
+{
+    return QByteArrayLiteral(
+        "<TrackRoute>\r\n\t<NamedTransforms>\r\n"
+        "\t\t<NamedTransform name='route_checkpoint_00' width='50.0'>\r\n"
+        "\t\t\t<Transform pos.x='0.0' pos.y='1.5' pos.z='0.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<!-- second gate -->\r\n"
+        "\t\t<NamedTransform name='route_checkpoint_01' width='40.0'>\r\n"
+        "\t\t\t<Transform pos.x='0.0' pos.y='2.0' pos.z='100.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<NamedTransform name='route_checkpoint_indicator_00'>\r\n"
+        "\t\t\t<Transform pos.x='4.0' pos.y='1.5' pos.z='0.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<NamedTransform name='route_checkpoint_indicator_01'>\r\n"
+        "\t\t\t<Transform pos.x='4.0' pos.y='2.0' pos.z='100.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<NamedTransform name='route_checkpoint_indicator_01b' tag='e'>\r\n"
+        "\t\t\t<Transform pos.x='-4.0' pos.y='2.0' pos.z='100.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<NamedTransform name='end_race_cannon_trigger' width='30.0'>\r\n"
+        "\t\t\t<Transform pos.x='0.0' pos.y='3.0' pos.z='200.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t\t<NamedTransform name='end_race_cannon_left_00'>\r\n"
+        "\t\t\t<Transform pos.x='-10.0' pos.y='3.0' pos.z='200.0' facing.x='0.0' facing.y='0.0' facing.z='1.0'/>\r\n"
+        "\t\t</NamedTransform>\r\n"
+        "\t</NamedTransforms>\r\n"
+        "\t<GameObjects/>\r\n"
+        "</TrackRoute>\r\n");
+}
+
+fh1::RouteTransform routePoint(const QString& name, const QVector3D& position, const QVector3D& facing = {0, 0, 1})
+{
+    fh1::RouteTransform transform;
+    transform.name = name;
+    transform.position = position;
+    transform.facing = facing;
+    return transform;
+}
+
+QStringList transformNames(const fh1::RaceRoute& route)
+{
+    QStringList names;
+    for (const fh1::RouteTransform& transform : route.transforms) {
+        names.append(transform.name);
+    }
+    return names;
+}
+
 const char* const kParticles = R"(<?xml version="1.0" encoding="utf-8"?>
 <ParticleEmitters>
   <SimpleEmitter>
@@ -172,6 +224,12 @@ bool writeFile(const QString& path, const QByteArray& content)
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile file(path);
     return file.open(QIODevice::WriteOnly) && file.write(content) == content.size();
+}
+
+QByteArray readFile(const QString& path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 
 } // namespace
@@ -262,9 +320,8 @@ private slots:
 
     void raceOverlayWithoutRacingLine()
     {
-        const auto transform = [](const QString& name, float x, float z) {
-            return fh1::RouteTransform{name, QVector3D(x, 0, z), QVector3D(0, 0, 1), 0.0F};
-        };
+        const auto transform
+            = [](const QString& name, float x, float z) { return routePoint(name, QVector3D(x, 0, z)); };
         fh1::RaceRoute route;
         route.source = QStringLiteral("Ribbon_00/TrackRoute012.xml");
         // Out of order in the file, as numbers past 9 sort after 1 by name.
@@ -318,8 +375,8 @@ private slots:
     void raceOverlayFollowsRacingLine()
     {
         fh1::RaceRoute route;
-        route.transforms = {{QStringLiteral("start_location_00"), QVector3D(1, 0, 1), QVector3D(1, 0, 0), 0.0F},
-            {QStringLiteral("route_waypoint_00"), QVector3D(50, 0, 1), QVector3D(1, 0, 0), 0.0F}};
+        route.transforms = {routePoint(QStringLiteral("start_location_00"), QVector3D(1, 0, 1), QVector3D(1, 0, 0)),
+            routePoint(QStringLiteral("route_waypoint_00"), QVector3D(50, 0, 1), QVector3D(1, 0, 0))};
         route.racingLine = {QVector3D(0, 0, 0), QVector3D(10, 0, 0), QVector3D(20, 0, 5)};
         const std::vector<fh1::Layer> layers = fh1::raceOverlay(fh1::Race{}, route);
         QCOMPARE(layers.size(), std::size_t{2});
@@ -328,6 +385,146 @@ private slots:
 
         // A route file with nothing to draw adds no layers.
         QVERIFY(fh1::raceOverlay(fh1::Race{}, fh1::RaceRoute{}).empty());
+    }
+
+    void gameFloatFormat()
+    {
+        QCOMPARE(fh1::formatGameFloat(0.0F), QStringLiteral("0.0"));
+        QCOMPARE(fh1::formatGameFloat(50.0F), QStringLiteral("50.0"));
+        QCOMPARE(fh1::formatGameFloat(-1276.13F), QStringLiteral("-1276.13"));
+        QCOMPARE(fh1::formatGameFloat(0.905893F), QStringLiteral("0.905893"));
+        QCOMPARE(fh1::formatGameFloat(-2.8213e-7F), QStringLiteral("-2.8213e-007"));
+        QCOMPARE(fh1::formatGameFloat(1234567.0F), QStringLiteral("1.23457e+006"));
+    }
+
+    void routeSavesWhatItRead()
+    {
+        const fh1::RaceRoute route = fh1::loaders::raceRoute(checkpointRoute(), QStringLiteral("TrackRoute005.xml"));
+        QCOMPARE(route.transforms.size(), std::size_t{7});
+        QCOMPARE(route.file.transformCount, std::size_t{7});
+        QVERIFY(!fh1::isRouteEdited(route));
+        QCOMPARE(fh1::writeRaceRoute(route), checkpointRoute());
+
+        // Only the moved transform is written anew; the comment before it
+        // and every other line stay as they were.
+        fh1::RaceRoute moved = route;
+        fh1::moveRoutePoint(moved, 1, QVector3D(2.5F, 2.0F, 110.0F));
+        QVERIFY(fh1::isRouteEdited(moved));
+        QByteArray expected = checkpointRoute();
+        expected.replace("pos.x='0.0' pos.y='2.0' pos.z='100.0'", "pos.x='2.5' pos.y='2.0' pos.z='110.0'");
+        // The checkpoint's indicators came along.
+        expected.replace("pos.x='4.0' pos.y='2.0' pos.z='100.0'", "pos.x='6.5' pos.y='2.0' pos.z='110.0'");
+        expected.replace("pos.x='-4.0' pos.y='2.0' pos.z='100.0'", "pos.x='-1.5' pos.y='2.0' pos.z='110.0'");
+        QCOMPARE(fh1::writeRaceRoute(moved), expected);
+
+        // A route with no file behind it is written whole.
+        fh1::RaceRoute scratch;
+        scratch.transforms = {routePoint(QStringLiteral("start_location_00"), QVector3D(1, 2, 3))};
+        scratch.transforms[0].width = 12.5F;
+        QCOMPARE(fh1::writeRaceRoute(scratch),
+            QByteArray("<TrackRoute>\r\n\t<NamedTransforms>\r\n\t\t<NamedTransform name='start_location_00' "
+                       "width='12.5'>\r\n\t\t\t<Transform pos.x='1.0' pos.y='2.0' pos.z='3.0' facing.x='0.0' "
+                       "facing.y='0.0' facing.z='1.0'/>\r\n\t\t</NamedTransform>\r\n\t</NamedTransforms>\r\n"
+                       "</TrackRoute>\r\n"));
+    }
+
+    void routePointsMoveAndTurn()
+    {
+        fh1::RaceRoute route = fh1::loaders::raceRoute(checkpointRoute(), {});
+        // The finish takes its cannons along.
+        fh1::moveRoutePoint(route, 5, QVector3D(5.0F, 3.0F, 210.0F));
+        QCOMPARE(route.transforms[6].position, QVector3D(-5.0F, 3.0F, 210.0F));
+        // A heading is kept level and of unit length.
+        fh1::turnRoutePoint(route, 0, QVector3D(3.0F, 2.0F, 4.0F));
+        QCOMPARE(route.transforms[0].facing, QVector3D(0.6F, 0.0F, 0.8F));
+        fh1::turnRoutePoint(route, 0, QVector3D(0.0F, 1.0F, 0.0F));
+        QCOMPARE(route.transforms[0].facing, QVector3D(0.6F, 0.0F, 0.8F));
+    }
+
+    void checkpointsInsertAndRemove()
+    {
+        const fh1::RaceRoute original = fh1::loaders::raceRoute(checkpointRoute(), {});
+        QVERIFY(fh1::canInsertOrRemove(original, 0));
+        QVERIFY(!fh1::canInsertOrRemove(original, 5));
+
+        fh1::RaceRoute route = original;
+        const std::optional<std::size_t> added = fh1::insertRoutePointAfter(route, 0);
+        QVERIFY(added.has_value());
+        QCOMPARE(*added, std::size_t{1});
+        QCOMPARE(transformNames(route),
+            (QStringList{QStringLiteral("route_checkpoint_00"), QStringLiteral("route_checkpoint_01"),
+                QStringLiteral("route_checkpoint_02"), QStringLiteral("route_checkpoint_indicator_00"),
+                QStringLiteral("route_checkpoint_indicator_01"), QStringLiteral("route_checkpoint_indicator_02"),
+                QStringLiteral("route_checkpoint_indicator_02b"), QStringLiteral("end_race_cannon_trigger"),
+                QStringLiteral("end_race_cannon_left_00")}));
+        // Halfway to the next checkpoint, facing it, as wide as the one before.
+        const fh1::RouteTransform& checkpoint = route.transforms[1];
+        QCOMPARE(checkpoint.position, QVector3D(0.0F, 1.75F, 50.0F));
+        QCOMPARE(checkpoint.facing, QVector3D(0.0F, 0.0F, 1.0F));
+        QCOMPARE(checkpoint.width, 50.0F);
+        // Its indicator sits where checkpoint 00's does beside it.
+        QCOMPARE(route.transforms[4].position, QVector3D(4.0F, 1.75F, 50.0F));
+        // The renumbered "b" indicator keeps its other attributes.
+        const QByteArray written = fh1::writeRaceRoute(route);
+        QVERIFY(written.contains("<NamedTransform name='route_checkpoint_indicator_02b' tag='e'>"));
+        QVERIFY(written.contains("<NamedTransform name='route_checkpoint_01' width='50.0'>"));
+
+        // After the last one, 50 m ahead.
+        const std::optional<std::size_t> appended = fh1::insertRoutePointAfter(route, 2);
+        QVERIFY(appended.has_value());
+        QCOMPARE(route.transforms[*appended].name, QStringLiteral("route_checkpoint_03"));
+        QCOMPARE(route.transforms[*appended].position, QVector3D(0.0F, 2.0F, 150.0F));
+
+        // Removing both again numbers the rest back and restores the file.
+        QVERIFY(fh1::removeRoutePoint(route, *appended));
+        QVERIFY(fh1::removeRoutePoint(route, 1));
+        QCOMPARE(transformNames(route), transformNames(original));
+        const fh1::RaceRoute reread = fh1::loaders::raceRoute(fh1::writeRaceRoute(route), {});
+        for (std::size_t i = 0; i < original.transforms.size(); ++i) {
+            QCOMPARE(reread.transforms[i].position, original.transforms[i].position);
+        }
+        QVERIFY(!fh1::removeRoutePoint(route, 5));
+    }
+
+    void routeFilesSaveWhereChosen()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString media = QStringLiteral("tracks/colorado/Ribbon_00/TrackRoute005.xml");
+        // A copy of the disc has a media folder; a copy of media does not.
+        QVERIFY(QDir().mkpath(dir.filePath(QStringLiteral("disc/Media"))));
+        QCOMPARE(fh1::routeOutputPath(dir.filePath(QStringLiteral("disc")), media),
+            dir.filePath(QStringLiteral("disc/Media/") + media));
+        QCOMPARE(fh1::routeOutputPath(dir.filePath(QStringLiteral("copy")), media),
+            dir.filePath(QStringLiteral("copy/") + media));
+
+        fh1::RaceRoute route = fh1::loaders::raceRoute(checkpointRoute(), {});
+        fh1::moveRoutePoint(route, 0, QVector3D(1.0F, 1.5F, 0.0F));
+        const QString original = dir.filePath(QStringLiteral("disc/Media/") + media);
+        QVERIFY(QDir().mkpath(QFileInfo(original).absolutePath()));
+        QVERIFY(writeFile(original, checkpointRoute()));
+
+        // Saving elsewhere creates the folders and leaves the game's file.
+        QString error;
+        const QString elsewhere = dir.filePath(QStringLiteral("copy/") + media);
+        const QString backup = dir.filePath(QStringLiteral("backups/") + media);
+        QVERIFY2(
+            fh1::saveEditedFile(fh1::writeRaceRoute(route), elsewhere, original, backup, &error), qPrintable(error));
+        QCOMPARE(readFile(elsewhere), fh1::writeRaceRoute(route));
+        QVERIFY(!QFile::exists(backup));
+
+        // Saving over the game's file keeps the original once, outside the
+        // game folder, which gains no files.
+        const QStringList gameFiles = QDir(QFileInfo(original).absolutePath()).entryList(QDir::Files);
+        QVERIFY2(
+            fh1::saveEditedFile(fh1::writeRaceRoute(route), original, original, backup, &error), qPrintable(error));
+        QCOMPARE(readFile(backup), checkpointRoute());
+        fh1::moveRoutePoint(route, 0, QVector3D(2.0F, 1.5F, 0.0F));
+        QVERIFY2(
+            fh1::saveEditedFile(fh1::writeRaceRoute(route), original, original, backup, &error), qPrintable(error));
+        QCOMPARE(readFile(backup), checkpointRoute());
+        QCOMPARE(readFile(original), fh1::writeRaceRoute(route));
+        QCOMPARE(QDir(QFileInfo(original).absolutePath()).entryList(QDir::Files), gameFiles);
     }
 
     void transformKinds()

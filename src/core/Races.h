@@ -34,6 +34,10 @@ enum class RoutePointKind {
 
 RoutePointKind routePointKind(const QString& transformName);
 
+/// The number a transform name ends with ("route_checkpoint_12" -> 12,
+/// "route_checkpoint_indicator_12b" -> 12), or -1.
+int routePointNumber(const QString& transformName);
+
 /// The transforms of `route` of one kind, ordered by the number their name
 /// ends with.
 std::vector<const RouteTransform*> routePoints(const RaceRoute& route, RoutePointKind kind);

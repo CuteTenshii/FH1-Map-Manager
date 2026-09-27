@@ -47,6 +47,10 @@ Layer navNodes(const QByteArray& data, const QString& source);
 /// aiopenworld.zip route_NNN.owt: an AI racing line as a polyline.
 Feature aiRoute(const QByteArray& data, const QString& name);
 
+/// A position or direction as the Properties panel shows it: "x, y, z"
+/// with two decimals.
+QString formatVector(const QVector3D& v);
+
 /// A transform name without its trailing number parts:
 /// "start_location_03" -> "start_location", "anim_couple_01_01" -> "anim_couple".
 QString transformKind(const QString& name);

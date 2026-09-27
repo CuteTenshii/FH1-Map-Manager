@@ -284,6 +284,7 @@ void loadTrackRoutes(const Context& ctx)
         }
         try {
             RaceRoute route = loaders::raceRoute(handle.readAll(), QStringLiteral("Ribbon_00/") + file);
+            route.mediaPath = QDir(ctx.install().mediaPath()).relativeFilePath(dir.filePath(file));
             loaders::appendTrackRoute(route, QFileInfo(file).completeBaseName(), layer);
             const QRegularExpressionMatch match = routeFile.match(file);
             if (match.hasMatch()) {

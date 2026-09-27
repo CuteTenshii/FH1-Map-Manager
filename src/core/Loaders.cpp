@@ -40,14 +40,6 @@ QVector3D attributeVector(const QXmlStreamReader& xml, const QString& source, co
         attributeFloat(xml, source, prefix + QLatin1Char('y')), attributeFloat(xml, source, prefix + QLatin1Char('z'))};
 }
 
-QString formatVector(const QVector3D& v)
-{
-    return QStringLiteral("%1, %2, %3")
-        .arg(static_cast<double>(v.x()), 0, 'f', 2)
-        .arg(static_cast<double>(v.y()), 0, 'f', 2)
-        .arg(static_cast<double>(v.z()), 0, 'f', 2);
-}
-
 void checkXml(const QXmlStreamReader& xml, const QString& source)
 {
     if (xml.hasError()) {
@@ -80,6 +72,14 @@ float beFloat(const QByteArray& data, qsizetype offset)
 }
 
 } // namespace
+
+QString formatVector(const QVector3D& v)
+{
+    return QStringLiteral("%1, %2, %3")
+        .arg(static_cast<double>(v.x()), 0, 'f', 2)
+        .arg(static_cast<double>(v.y()), 0, 'f', 2)
+        .arg(static_cast<double>(v.z()), 0, 'f', 2);
+}
 
 QString transformKind(const QString& name)
 {
@@ -172,28 +172,83 @@ RaceRoute raceRoute(const QByteArray& data, const QString& source)
 {
     RaceRoute route;
     route.source = source;
-    QXmlStreamReader xml(data);
-    QString transformName;
-    float width = 0.0F;
-    while (!xml.atEnd()) {
-        if (xml.readNext() != QXmlStreamReader::StartElement) {
-            continue;
+    // Character offsets of the reader are byte offsets only in plain ASCII.
+    const bool ascii
+        = std::all_of(data.begin(), data.end(), [](char c) { return static_cast<unsigned char>(c) < 0x80; });
+    if (ascii) {
+        route.file.text = data;
+        if (data.contains("\r\n")) {
+            route.file.newline = QByteArrayLiteral("\r\n");
+        } else {
+            route.file.newline = QByteArrayLiteral("\n");
         }
-        if (xml.name() == QLatin1String("NamedTransform")) {
-            transformName = xml.attributes().value(QLatin1String("name")).toString();
-            width = xml.attributes().hasAttribute(QLatin1String("width"))
-                ? attributeFloat(xml, source, QStringLiteral("width"))
-                : 0.0F;
-        } else if (xml.name() == QLatin1String("Transform")) {
-            RouteTransform transform;
-            transform.name = transformName;
+    }
+    QXmlStreamReader xml(data);
+    RouteTransform transform;
+    bool inTransform = false;
+    bool havePosition = false;
+    bool haveStyle = false;
+    // Where the text of the next transform starts: after the last one kept.
+    qsizetype nextStart = -1;
+    while (!xml.atEnd()) {
+        const QXmlStreamReader::TokenType token = xml.readNext();
+        if (token == QXmlStreamReader::StartElement && xml.name() == QLatin1String("NamedTransform")) {
+            transform = RouteTransform();
+            inTransform = true;
+            havePosition = false;
+            for (const QXmlStreamAttribute& attribute : xml.attributes()) {
+                transform.attributes.append({attribute.name().toString(), attribute.value().toString()});
+            }
+            transform.name = xml.attributes().value(QLatin1String("name")).toString();
+            if (xml.attributes().hasAttribute(QLatin1String("width"))) {
+                transform.width = attributeFloat(xml, source, QStringLiteral("width"));
+            }
+            if (ascii) {
+                const qsizetype tag = data.lastIndexOf("<NamedTransform", xml.characterOffset());
+                const qsizetype lineStart = data.lastIndexOf('\n', tag) + 1;
+                // Text between transforms goes with the one after it.
+                transform.sourceStart = nextStart < 0 ? lineStart : nextStart;
+                if (!haveStyle) {
+                    route.file.indent = data.mid(lineStart, tag - lineStart);
+                }
+            }
+        } else if (token == QXmlStreamReader::StartElement && xml.name() == QLatin1String("Transform") && inTransform) {
             transform.position = attributeVector(xml, source, QStringLiteral("pos."));
             transform.facing = attributeVector(xml, source, QStringLiteral("facing."));
-            transform.width = width;
-            route.transforms.push_back(std::move(transform));
+            havePosition = true;
+            if (ascii && !haveStyle) {
+                const qsizetype tag = data.lastIndexOf("<Transform", xml.characterOffset());
+                const qsizetype lineStart = data.lastIndexOf('\n', tag) + 1;
+                route.file.innerIndent = data.mid(lineStart, tag - lineStart);
+                haveStyle = true;
+            }
+        } else if (token == QXmlStreamReader::EndElement && xml.name() == QLatin1String("NamedTransform")
+            && inTransform) {
+            inTransform = false;
+            if (ascii) {
+                qsizetype end = xml.characterOffset();
+                if (data.mid(end, 2) == "\r\n") {
+                    end += 2;
+                } else if (data.mid(end, 1) == "\n") {
+                    end += 1;
+                }
+                transform.sourceEnd = end;
+            }
+            // A transform without a <Transform> has nothing to show; its text
+            // stays with the next one.
+            if (havePosition) {
+                nextStart = transform.sourceEnd;
+                route.transforms.push_back(std::move(transform));
+                transform = RouteTransform();
+            }
         }
     }
     checkXml(xml, source);
+    if (ascii && !route.transforms.empty()) {
+        route.file.transformsStart = route.transforms.front().sourceStart;
+        route.file.transformsEnd = route.transforms.back().sourceEnd;
+    }
+    route.file.transformCount = route.transforms.size();
     return route;
 }
 

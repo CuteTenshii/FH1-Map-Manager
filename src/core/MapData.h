@@ -58,8 +58,35 @@ struct RouteTransform {
     /// Unit heading.
     QVector3D facing;
     /// Metres across, for the transforms that carry a `width` attribute
-    /// (the finish trigger); 0 for the others.
+    /// (checkpoints and the finish trigger); 0 for the others.
     float width = 0.0F;
+    /// The `<NamedTransform>` attributes as written in the file, in order;
+    /// saving writes `name` and `width` from the fields above.
+    Properties attributes;
+    /// Where the transform's text lies in RouteFile::text, from the end of
+    /// the one before it to the end of its closing line; -1 for a
+    /// transform added since.
+    qsizetype sourceStart = -1;
+    qsizetype sourceEnd = -1;
+    /// Changed since it was read, so saving writes it anew.
+    bool edited = false;
+};
+
+/// A route file as read, so that saving can keep what was not edited
+/// byte for byte.
+struct RouteFile {
+    /// The file's contents; empty for a route built from scratch, or when
+    /// the file is not plain ASCII.
+    QByteArray text;
+    /// Where the first transform's text starts and the last one's ends.
+    qsizetype transformsStart = -1;
+    qsizetype transformsEnd = -1;
+    /// How many transforms the file holds.
+    std::size_t transformCount = 0;
+    /// The layout of the file's transforms, for writing new ones.
+    QByteArray indent = QByteArrayLiteral("\t\t");
+    QByteArray innerIndent = QByteArrayLiteral("\t\t\t");
+    QByteArray newline = QByteArrayLiteral("\r\n");
 };
 
 /// A race route: tracks/<track>/Ribbon_00/TrackRouteNNN.xml, whose NNN is
@@ -69,6 +96,10 @@ struct RaceRoute {
     int routeId = -1;
     /// Where the transforms came from, e.g. "Ribbon_00/TrackRoute096.xml".
     QString source;
+    /// The file's path under the media folder, as the disc spells it, e.g.
+    /// "tracks/colorado/Ribbon_00/TrackRoute096.xml".
+    QString mediaPath;
+    RouteFile file;
     /// In file order.
     std::vector<RouteTransform> transforms;
     /// The AI racing line of the route from aiopenworld.zip, or empty when
