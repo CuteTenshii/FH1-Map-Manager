@@ -3,6 +3,7 @@
 #include "Loaders.h"
 #include "ModelPreview.h"
 #include "RenderMesh.h"
+#include "ScatterSet.h"
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldDebugPanel.h"
@@ -362,6 +363,123 @@ QByteArray zoneFile(const QList<TestPlacement>& placements)
         d.append("xy", 2);
         d.append(QByteArray(32, '\x77'));
     }
+    return d;
+}
+
+struct TestScatterMesh {
+    /// Draw record per level of detail; empty for a mesh named by `path`.
+    QList<quint32> draws;
+    QByteArray path;
+};
+
+struct TestScatterInstance {
+    QVector3D position;
+    /// X, Y and Z axes, scaled, as the set stores them.
+    std::array<QVector3D, 3> axes{QVector3D(1, 0, 0), QVector3D(0, 1, 0), QVector3D(0, 0, 1)};
+};
+
+struct TestScatterGroup {
+    quint32 mesh = 0;
+    QList<TestScatterInstance> instances;
+    float drawDistance = 220.0F;
+    /// First and second switch distance of each block; {0, 0} for a block
+    /// that switches nothing.
+    QList<QPair<float, float>> blocks;
+};
+
+/// A procedural placement set in the layout ScatterSet documents.
+QByteArray scatterFile(const QByteArray& name, const QList<TestScatterMesh>& meshes,
+    const QList<TestScatterGroup>& groups, quint32 extraEntries = 2)
+{
+    QByteArray d("OEGP");
+    be32(d, 42);
+    d.append(QByteArray(0x30 - d.size(), '\0'));
+    be32(d, 7);
+    beFloat(d, -1.0F);
+    beFloat(d, 2500.0F);
+    be32(d, 22);
+    be32(d, extraEntries);
+    be32(d, 0);
+    be32(d, 0); // file size, patched below
+    be32(d, 0);
+    be32(d, 0);
+    be32(d, static_cast<quint32>(meshes.size()));
+    d.append(QByteArray(8, '\0'));
+    d.append(name.leftJustified(0x1C, '\0', true));
+    be32(d, 0);
+    for (const TestScatterMesh& mesh : meshes) {
+        for (float v : {-1.0F, 0.0F, -1.0F, 0.0F, 1.0F, 5.0F, 1.0F, 0.0F}) {
+            beFloat(d, v);
+        }
+        be32(d, static_cast<quint32>(mesh.path.size()));
+        for (int slot = 0; slot < 3; ++slot) {
+            be32(d, slot < mesh.draws.size() ? 1 : 0);
+            be32(d, 0x376AD290);
+        }
+        be32(d, 0x14756A8);
+    }
+    for (const TestScatterMesh& mesh : meshes) {
+        for (quint32 draw : mesh.draws) {
+            be32(d, draw);
+        }
+    }
+    for (const TestScatterMesh& mesh : meshes) {
+        d.append(mesh.path);
+    }
+    while (d.size() % 4 != 0) {
+        d.append('\0');
+    }
+    for (quint32 e = 0; e < extraEntries; ++e) {
+        be32(d, 0x4C80 + e);
+        be32(d, 0);
+    }
+    be32(d, 0x376AD608);
+    beFloat(d, 220.0F);
+    be32(d, 0);
+    be32(d, static_cast<quint32>(groups.size()));
+    be32(d, 0);
+    for (const TestScatterGroup& group : groups) {
+        be32(d, 0);
+        be32(d, 0xFFFFFFFF);
+        for (float v : {0.5F, 1.0F, 0.5F, 0.0F, 6.0F, 6.77F, 1.0F}) {
+            beFloat(d, v);
+        }
+        be32(d, 0);
+        be32(d, 1);
+        be32(d, group.mesh);
+        be32(d, static_cast<quint32>(group.instances.size()));
+        be32(d, 3);
+        be32(d, static_cast<quint32>(group.blocks.size()));
+        for (float v : {group.drawDistance, 150.0F, 300.0F, group.drawDistance}) {
+            beFloat(d, v);
+        }
+        d.append(QByteArray(16, '\0'));
+    }
+    while (d.size() % 16 != 0) {
+        d.append('\0');
+    }
+    for (const TestScatterGroup& group : groups) {
+        for (const TestScatterInstance& instance : group.instances) {
+            for (const QVector3D& axis : instance.axes) {
+                beFloat(d, axis.x());
+                beFloat(d, axis.y());
+                beFloat(d, axis.z());
+                beFloat(d, 0.0F);
+            }
+            for (float v : {instance.position.x(), instance.position.y(), instance.position.z(), 1.0F, 0.5F, 0.5F, 0.5F,
+                     0.0F, 0.0F, 1.0F, 0.0F, 0.0F}) {
+                beFloat(d, v);
+            }
+        }
+        for (const auto& [first, second] : group.blocks) {
+            for (float v : {first, second, first > 0.0F ? group.drawDistance : 0.0F, 150.0F, 300.0F, 2500.0F,
+                     first > 0.0F ? group.drawDistance : 0.0F, first > 0.0F ? 15.0F : 0.0F}) {
+                beFloat(d, v);
+            }
+        }
+    }
+    d.append(QByteArray(32, '\x5A')); // data after the groups the reader skips
+    qToBigEndian(static_cast<quint32>(d.size()), d.data() + 0x48);
     return d;
 }
 
@@ -727,6 +845,102 @@ private slots:
         const QVector3D alongZ = pole.apply(QVector3D(0, 0, 1)) - pole.position;
         QVERIFY((alongZ - QVector3D(-0.986F, 0, 0.164F)).length() < 1e-3F);
         QCOMPARE(pole.apply(QVector3D(0, 2, 0)), pole.position + QVector3D(0, 2, 0));
+    }
+
+    void readsScatterSets()
+    {
+        // A tree at two levels, a mesh named by a path of odd length, and a
+        // bush at one level whose group gives no switch distances.
+        TestScatterInstance turned;
+        turned.position = QVector3D(-167.5F, 36.25F, 854.0F);
+        turned.axes = {QVector3D(0, 0, -0.5F), QVector3D(0, 0.5F, 0), QVector3D(0.5F, 0, 0)};
+        const TestScatterInstance upright{QVector3D(10, 20, 30)};
+        const QByteArray data = scatterFile("Models_Ungrouped_1706",
+            {{{61908, 61909}, {}}, {{}, "Tracks\\Colorado\\Scene\\Vegetation\\VEG_Tree.max"}, {{61915}, {}}},
+            {{0, {turned, upright}, 220.0F, {{0.0F, 0.0F}, {50.0F, 100.0F}}}, {1, {upright}, 220.0F, {{50.0F, 100.0F}}},
+                {2, {upright}, 100.0F, {}}});
+        QString error;
+        const std::optional<fh1::ScatterSet> set = fh1::readScatterSet(data, &error);
+        QVERIFY2(set.has_value(), qPrintable(error));
+        QCOMPARE(set->name, QStringLiteral("Models_Ungrouped_1706"));
+        QCOMPARE(set->meshDraws.size(), std::size_t{3});
+        QCOMPARE(set->meshDraws[0], (std::vector<std::uint32_t>{61908, 61909}));
+        QVERIFY(set->meshDraws[1].empty());
+        QCOMPARE(set->meshDraws[2], (std::vector<std::uint32_t>{61915}));
+        // The path-named mesh's instance is left out.
+        QCOMPARE(set->instances.size(), std::size_t{3});
+        const fh1::ScatterSet::Instance& tree = set->instances[0];
+        QCOMPARE(tree.mesh, 0u);
+        QCOMPARE(tree.placement.position, turned.position);
+        // The stored Z axis, negated, maps the model's stored Z.
+        QCOMPARE(tree.placement.rows, (std::array<float, 9>{0, 0, -0.5F, 0, 0.5F, 0, -0.5F, 0, 0}));
+        // The block that switches levels gives the distances.
+        QCOMPARE(tree.placement.ranges, (std::array<float, 3>{50.0F, 220.0F, -1.0F}));
+        QCOMPARE(set->instances[1].placement.position, upright.position);
+        // One level, drawn to the group's distance.
+        QCOMPARE(set->instances[2].mesh, 2u);
+        QCOMPARE(set->instances[2].placement.ranges, (std::array<float, 3>{100.0F, -1.0F, -1.0F}));
+
+        QByteArray wrongSize = data;
+        wrongSize[0x4B] = static_cast<char>(wrongSize[0x4B] + 1);
+        QVERIFY(!fh1::readScatterSet(wrongSize, &error).has_value());
+        QVERIFY(!fh1::readScatterSet(QByteArray("OEGP") + QByteArray(0x100, '\0'), &error).has_value());
+        QByteArray truncated = data.left(data.size() - 200);
+        qToBigEndian(static_cast<quint32>(truncated.size()), truncated.data() + 0x48);
+        QVERIFY(!fh1::readScatterSet(truncated, &error).has_value());
+    }
+
+    void placesScatteredModels()
+    {
+        // A tree at two levels whose template draws are placed at the
+        // origin, as the game places them, and copied twice by a set.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QByteArray treeNear = renderModel({quad(QStringLiteral("Tree_WhiteFir01_LOD00"), 0, 0, 0, 1)});
+        const QByteArray treeFar = renderModel({quad(QStringLiteral("Tree_WhiteFir01_LOD01"), 0, 0, 0, 1)});
+        const QByteArray ground = renderModel({quad(QStringLiteral("Terrain_LOD00_01"), 600, 600, 0, 100)});
+        const TestPlacement templateNear{1, QVector3D(0, 0, 0), {1, 0, 0, 0, 1, 0, 0, 0, -1}};
+        const TestPlacement templateFar{2, QVector3D(0, 0, 0), {1, 0, 0, 0, 1, 0, 0, 0, -1}};
+        const TestScatterInstance first{QVector3D(500, 10, 500)};
+        const TestScatterInstance second{QVector3D(540, 12, 520)};
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"), ground},
+                {QStringLiteral("coloradoout.00001.rmb.bin"), treeNear},
+                {QStringLiteral("coloradoout.00002.rmb.bin"), treeFar},
+                {QStringLiteral("__R00Z00000.pvsz"), zoneFile({templateNear, templateFar})},
+                {QStringLiteral("__R00G00000.pgeo"),
+                    scatterFile(
+                        "Models_Ungrouped_1", {{{1, 2}, {}}}, {{0, {first, second}, 220.0F, {{50.0F, 100.0F}}}})},
+                // Sets of other kinds are not read as model sets.
+                {QStringLiteral("__R00G00001.pgeo"), QByteArray("OEGP") + QByteArray(0x5C, '\0') + "Grass_Ungrouped"},
+                {QStringLiteral("__r00g00000.pgeo"),
+                    scatterFile(
+                        "Models_Ungrouped_1", {{{1, 2}, {}}}, {{0, {first, second}, 220.0F, {{50.0F, 100.0F}}}})}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        QString error;
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}}, {0, 1, 2}), archive, nullptr, &error);
+        QVERIFY2(placements.has_value(), qPrintable(error));
+        QCOMPARE(placements->scatterSets().size(), std::size_t{1});
+        QCOMPARE(placements->failedScatterSets(), 0);
+        QVERIFY(!placements->isScatterTemplate(0));
+        QVERIFY(placements->isScatterTemplate(1));
+        QVERIFY(placements->isScatterTemplate(2));
+
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(index.has_value());
+        // Two copies at two levels each; nothing at the origin.
+        QCOMPARE(index->placedCount(), 4);
+        QCOMPARE(index->localModelCount(), 0);
+        for (const fh1::WorldChunk& chunk : index->chunks()) {
+            if (!chunk.placed) {
+                continue;
+            }
+            QVERIFY(chunk.placement.position == first.position || chunk.placement.position == second.position);
+            QCOMPARE(chunk.bandStart, chunk.lod == 0 ? 0.0F : 50.0F);
+            QCOMPARE(chunk.bandEnd, chunk.lod == 0 ? 50.0F : 220.0F);
+        }
     }
 
     void placesPropsFromZones()

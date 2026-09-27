@@ -2,6 +2,7 @@
 
 #include "BigEndianCursor.h"
 #include "PvsFile.h"
+#include "ScatterSet.h"
 
 #include <QRegularExpression>
 #include <QSet>
@@ -20,6 +21,12 @@ constexpr std::uint32_t kMaxZoneEntries = 1'000'000;
 /// 3 floats, 9 half floats and 16 zero bytes.
 constexpr qsizetype kRecordFixedBytes = 52;
 constexpr qsizetype kBlockTrailerBytes = 32;
+/// Name of the procedural sets that place models; other sets place grass,
+/// crowds, glows and lights with other layouts.
+const QLatin1String kModelSetName("Models_Ungrouped");
+/// A set's name lies within this many bytes from the start.
+constexpr qsizetype kScatterNameEnd = 0x80;
+
 /// Block id of props that only an event or a script shows.
 constexpr std::uint32_t kEventBlock = 0xFFFFFFFF;
 
@@ -203,7 +210,72 @@ std::optional<TrackPlacements> TrackPlacements::load(
         std::sort(listing.begin(), listing.end());
         listing.erase(std::unique(listing.begin(), listing.end()), listing.end());
     }
+
+    // Procedural sets, likewise stored several times each. Only the start of
+    // a file is read to tell a model set from the others.
+    std::vector<std::size_t> sets;
+    QSet<QString> setNames;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (!entries[i].name.endsWith(QLatin1String(".pgeo"), Qt::CaseInsensitive)) {
+            continue;
+        }
+        const QString name = ForzaZip::normalizeName(entries[i].name);
+        if (!setNames.contains(name)) {
+            setNames.insert(name);
+            sets.push_back(i);
+        }
+    }
+    struct ReadSet {
+        bool isModelSet = false;
+        std::optional<ScatterSet> set;
+    };
+    const std::vector<ReadSet> readSets
+        = QtConcurrent::blockingMapped<std::vector<ReadSet>>(sets, [&archive, cancel](std::size_t entry) {
+              ReadSet read;
+              if (cancel != nullptr && cancel->load()) {
+                  return read;
+              }
+              const ZipEntry& zipEntry = archive.entries()[entry];
+              read.isModelSet = archive.readPrefix(zipEntry, kScatterNameEnd).contains(kModelSetName.latin1());
+              if (read.isModelSet) {
+                  const QByteArray data = archive.read(zipEntry);
+                  read.set = data.isNull() ? std::nullopt : readScatterSet(data);
+              }
+              return read;
+          });
+    if (cancel != nullptr && cancel->load()) {
+        return std::nullopt;
+    }
+    result.m_scatterTemplates.assign(result.m_drawObjects.size(), false);
+    for (const ReadSet& read : readSets) {
+        if (!read.isModelSet) {
+            continue;
+        }
+        if (!read.set.has_value()) {
+            ++result.m_failedScatterSets;
+            continue;
+        }
+        const ScatterSet& set = read.set.value();
+        for (const std::vector<std::uint32_t>& draws : set.meshDraws) {
+            for (const std::uint32_t draw : draws) {
+                if (draw < result.m_scatterTemplates.size()) {
+                    result.m_scatterTemplates[draw] = true;
+                }
+            }
+        }
+        result.m_scatterSets.push_back(set);
+    }
     return result;
+}
+
+TrackPlacements::TrackPlacements() = default;
+TrackPlacements::~TrackPlacements() = default;
+TrackPlacements::TrackPlacements(TrackPlacements&&) noexcept = default;
+TrackPlacements& TrackPlacements::operator=(TrackPlacements&&) noexcept = default;
+
+bool TrackPlacements::isScatterTemplate(std::size_t draw) const
+{
+    return draw < m_scatterTemplates.size() && m_scatterTemplates[draw];
 }
 
 const std::vector<std::uint16_t>& TrackPlacements::zonesListing(std::size_t draw) const

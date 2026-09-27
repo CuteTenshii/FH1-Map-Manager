@@ -42,6 +42,8 @@ add_library(fh1core STATIC
     src/core/PvsFile.h
     src/core/RenderMesh.cpp
     src/core/RenderMesh.h
+    src/core/ScatterSet.cpp
+    src/core/ScatterSet.h
     src/core/StringTable.cpp
     src/core/StringTable.h
     src/core/TrackPlacements.cpp

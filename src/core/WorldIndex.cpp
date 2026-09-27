@@ -1,6 +1,7 @@
 #include "WorldIndex.h"
 
 #include "RenderMesh.h"
+#include "ScatterSet.h"
 #include "TrackTextures.h"
 
 #include <QDataStream>
@@ -22,7 +23,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 9;
+constexpr quint32 kCacheVersion = 10;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// Meshes without LOD levels are drawn up to this distance, or further for
@@ -169,14 +170,43 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
     // transform, so the prop does not vanish up close.
     constexpr int kNeighbourReach = 3;
     const auto modelOf = [&](std::size_t draw) -> const LocalModel* {
+        if (draw >= placements.drawCount()) {
+            return nullptr;
+        }
         const auto it = models.constFind(placements.drawObject(draw));
         return it == models.cend() ? nullptr : &it.value();
     };
     QSet<std::uint32_t> placedObjects;
+    const auto addChunk = [&](const LocalModel& model, const Placement& placement, int lod) {
+        WorldChunk chunk;
+        chunk.entry = model.entry;
+        chunk.lod = static_cast<std::int8_t>(lod);
+        chunk.group = groupOf(model.header.firstPartName);
+        chunk.placed = true;
+        chunk.placement = placement;
+        const QVector3D& lo = model.header.boundsMin;
+        const QVector3D& hi = model.header.boundsMax;
+        for (int corner = 0; corner < 8; ++corner) {
+            const QVector3D p = placement.apply(QVector3D((corner & 1) != 0 ? hi.x() : lo.x(),
+                (corner & 2) != 0 ? hi.y() : lo.y(), (corner & 4) != 0 ? hi.z() : lo.z()));
+            if (corner == 0) {
+                chunk.boundsMin = p;
+                chunk.boundsMax = p;
+            } else {
+                chunk.boundsMin = QVector3D(std::min(chunk.boundsMin.x(), p.x()), std::min(chunk.boundsMin.y(), p.y()),
+                    std::min(chunk.boundsMin.z(), p.z()));
+                chunk.boundsMax = QVector3D(std::max(chunk.boundsMax.x(), p.x()), std::max(chunk.boundsMax.y(), p.y()),
+                    std::max(chunk.boundsMax.z(), p.z()));
+            }
+        }
+        m_chunks.push_back(chunk);
+    };
     const std::size_t draws = placements.drawCount();
     for (std::size_t d = 0; d < draws; ++d) {
         const LocalModel* model = modelOf(d);
-        if (model == nullptr) {
+        // Templates of the procedural sets sit at the world origin; the sets
+        // place their copies below.
+        if (model == nullptr || placements.isScatterTemplate(d)) {
             continue;
         }
         const Placement* placement = placements.placement(d);
@@ -191,6 +221,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
                     const LocalModel* other = modelOf(static_cast<std::size_t>(n));
                     const Placement* candidate = placements.placement(static_cast<std::size_t>(n));
                     if (other != nullptr && candidate != nullptr
+                        && !placements.isScatterTemplate(static_cast<std::size_t>(n))
                         && rendermesh::lodGroupKey(other->header.firstPartName) == key) {
                         placement = candidate;
                         break;
@@ -201,29 +232,22 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
         if (placement == nullptr) {
             continue;
         }
-        WorldChunk chunk;
-        chunk.entry = model->entry;
-        chunk.lod = static_cast<std::int8_t>(std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3));
-        chunk.group = groupOf(model->header.firstPartName);
-        chunk.placed = true;
-        chunk.placement = *placement;
-        const QVector3D& lo = model->header.boundsMin;
-        const QVector3D& hi = model->header.boundsMax;
-        for (int corner = 0; corner < 8; ++corner) {
-            const QVector3D p = placement->apply(QVector3D((corner & 1) != 0 ? hi.x() : lo.x(),
-                (corner & 2) != 0 ? hi.y() : lo.y(), (corner & 4) != 0 ? hi.z() : lo.z()));
-            if (corner == 0) {
-                chunk.boundsMin = p;
-                chunk.boundsMax = p;
-            } else {
-                chunk.boundsMin = QVector3D(std::min(chunk.boundsMin.x(), p.x()), std::min(chunk.boundsMin.y(), p.y()),
-                    std::min(chunk.boundsMin.z(), p.z()));
-                chunk.boundsMax = QVector3D(std::max(chunk.boundsMax.x(), p.x()), std::max(chunk.boundsMax.y(), p.y()),
-                    std::max(chunk.boundsMax.z(), p.z()));
+        addChunk(*model, *placement, std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3));
+        placedObjects.insert(placements.drawObject(d));
+    }
+    // Copies placed by procedural sets. A mesh's levels are its template
+    // draws, finest first; the set's distances are given per level, so the
+    // level is the slot rather than the level named in the model file.
+    for (const ScatterSet& set : placements.scatterSets()) {
+        for (const ScatterSet::Instance& instance : set.instances) {
+            const std::vector<std::uint32_t>& levels = set.meshDraws[instance.mesh];
+            for (std::size_t level = 0; level < levels.size(); ++level) {
+                if (const LocalModel* model = modelOf(levels[level])) {
+                    addChunk(*model, instance.placement, static_cast<int>(level));
+                    placedObjects.insert(placements.drawObject(levels[level]));
+                }
             }
         }
-        m_chunks.push_back(chunk);
-        placedObjects.insert(placements.drawObject(d));
     }
     for (auto it = models.cbegin(); it != models.cend(); ++it) {
         if (!placedObjects.contains(it.key())) {

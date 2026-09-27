@@ -15,6 +15,8 @@
 
 namespace fh1 {
 
+struct ScatterSet;
+
 /// Where one draw record places its render object.
 struct Placement {
     /// World position of the model's origin.
@@ -60,6 +62,10 @@ struct Placement {
 /// its other levels. The layout reads every zone of Colorado to its end and
 /// was matched against CollObjs.xml and against the world-space models; it is
 /// inferred from the data, not from game code.
+///
+/// Trees, bushes, rocks and many fences are not placed by zone files but by
+/// procedural sets (see ScatterSet), which copy the models of template draw
+/// records placed at the world origin.
 class TrackPlacements {
 public:
     /// Reads the draw table of `pvs` and every zone file in `archive`.
@@ -68,6 +74,13 @@ public:
     /// counted in failedZones().
     static std::optional<TrackPlacements> load(const QByteArray& pvs, const ForzaZip& archive,
         const std::atomic<bool>* cancel = nullptr, QString* error = nullptr);
+
+    TrackPlacements();
+    ~TrackPlacements();
+    TrackPlacements(TrackPlacements&&) noexcept;
+    TrackPlacements& operator=(TrackPlacements&&) noexcept;
+    TrackPlacements(const TrackPlacements&) = delete;
+    TrackPlacements& operator=(const TrackPlacements&) = delete;
 
     /// Parses one zone file into (draw record, placement) pairs.
     static std::optional<std::vector<std::pair<std::uint32_t, Placement>>> readZone(
@@ -84,12 +97,23 @@ public:
     int zoneCount() const { return m_zones; }
     int failedZones() const { return m_failedZones; }
 
+    /// The procedural model sets ("Models_Ungrouped") of the track.
+    const std::vector<ScatterSet>& scatterSets() const { return m_scatterSets; }
+    /// Sets that could not be read.
+    int failedScatterSets() const { return m_failedScatterSets; }
+    /// True if draw record `draw` is a template the procedural sets copy,
+    /// which the game does not draw where its own placement puts it.
+    bool isScatterTemplate(std::size_t draw) const;
+
 private:
     std::vector<std::uint16_t> m_drawObjects;
     std::vector<std::optional<Placement>> m_placements;
     std::vector<std::vector<std::uint16_t>> m_zonesListing;
     int m_zones = 0;
     int m_failedZones = 0;
+    std::vector<ScatterSet> m_scatterSets;
+    int m_failedScatterSets = 0;
+    std::vector<bool> m_scatterTemplates;
 };
 
 } // namespace fh1

@@ -5,6 +5,7 @@
 #include "GameInstall.h"
 #include "MapLoader.h"
 #include "RenderMesh.h"
+#include "ScatterSet.h"
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
@@ -222,6 +223,16 @@ private slots:
         const QVector3D xAxis = pole->apply(QVector3D(1, 0, 0)) - pole->position;
         QVERIFY((xAxis - QVector3D(0.163759F, 0, 0.9865F)).length() < 0.01F);
 
+        // Every procedural model set reads; together they place the trees,
+        // bushes, rocks and fences (128,622 copies when this was written).
+        QCOMPARE(placements->scatterSets().size(), std::size_t{1562});
+        QCOMPARE(placements->failedScatterSets(), 0);
+        std::size_t scattered = 0;
+        for (const fh1::ScatterSet& set : placements->scatterSets()) {
+            scattered += set.instances.size();
+        }
+        QVERIFY2(scattered > 125000 && scattered < 135000, qPrintable(QString::number(scattered)));
+
         // The zone at the festival (X -752, Z -260) lists the festival's
         // ground (render object 10020) but not the backdrop terrain over it
         // (render object 12910), which there lies 14 m above the ground.
@@ -248,7 +259,8 @@ private slots:
         const std::optional<fh1::WorldIndex> index
             = fh1::WorldIndex::build(archive, {}, nullptr, &*placements, &*zones);
         QVERIFY(index.has_value());
-        QVERIFY2(index->placedCount() > 45000, qPrintable(QString::number(index->placedCount())));
+        // Zone placements and every level of every procedural copy.
+        QVERIFY2(index->placedCount() > 250000, qPrintable(QString::number(index->placedCount())));
         int backdrop = 0;
         for (const fh1::WorldChunk& chunk : index->chunks()) {
             if (chunk.backdrop) {
