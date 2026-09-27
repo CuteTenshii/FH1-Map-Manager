@@ -7,6 +7,8 @@
 #include "MainWindow.h"
 #include "MapView.h"
 #include "RaceTableModel.h"
+#include "RouteEditing.h"
+#include "XmlElements.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -121,6 +123,16 @@ bool writeRaceInstall(
     }
     objects.write("</GameObjs>\r\n");
     objects.close();
+    // A collision object well away from everything else.
+    QFile collision(ribbon + QStringLiteral("/CollObjs.xml"));
+    if (!collision.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    collision.write("<?xml version=\"1.0\" ?>\r\n<CollObjs>\r\n"
+                    "\t<Obj0 PhysicsType=\"CO_Sign_001.rmb\" GraphicsName=\"#0\">\r\n"
+                    "\t\t<Pos x=\"300.000000\" y=\"5.000000\" z=\"300.000000\"/>\r\n"
+                    "\t</Obj0>\r\n</CollObjs>\r\n");
+    collision.close();
 
     const QString connection = QStringLiteral("race-install");
     bool ok = true;
@@ -571,6 +583,68 @@ private slots:
         QVERIFY(original.open(QIODevice::ReadOnly));
         QCOMPARE(original.readAll(), originalObjects);
         QDir(EditSession::backupFolder()).removeRecursively();
+        QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void deletingFeaturesOfOtherLayers()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QVERIFY(writeRaceInstall(dir.filePath(QStringLiteral("disc"))));
+        const QString output = dir.filePath(QStringLiteral("edited"));
+        QSettings().setValue(QStringLiteral("edit/outputFolder"), output);
+
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.openGameFolder(dir.filePath(QStringLiteral("disc"))));
+        QTableView* objects = nullptr;
+        for (QTableView* table : window.findChildren<QTableView*>()) {
+            if (table->model()->headerData(1, Qt::Horizontal).toString() == QLatin1String("ID")) {
+                objects = table;
+            }
+        }
+        QVERIFY(objects != nullptr);
+        QTRY_VERIFY(objects->model()->rowCount() > 0);
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        const auto selectById = [objects](const QString& id) {
+            for (int row = 0; row < objects->model()->rowCount(); ++row) {
+                if (objects->model()->index(row, 1).data().toString() == id) {
+                    objects->selectionModel()->select(objects->model()->index(row, 0),
+                        QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                    return true;
+                }
+            }
+            return false;
+        };
+        QAction* remove = actions[QStringLiteral("Delete")];
+
+        // A collision object goes from CollObjs.xml.
+        QVERIFY(selectById(QStringLiteral("CO_Sign_001.rmb")));
+        QVERIFY(remove->isEnabled());
+        remove->trigger();
+        QVERIFY(!selectById(QStringLiteral("CO_Sign_001.rmb")));
+
+        // A route's start slot goes from its route file, after asking, as a
+        // race runs on the route.
+        QVERIFY(selectById(QStringLiteral("start_location_00")));
+        answerNextMessageBox(QStringLiteral("Yes"));
+        remove->trigger();
+        QVERIFY(!selectById(QStringLiteral("start_location_00")));
+
+        actions[QStringLiteral("Save Edits")]->trigger();
+        QFile collision(output + QStringLiteral("/tracks/testbed/Ribbon_00/CollObjs.xml"));
+        QVERIFY(collision.open(QIODevice::ReadOnly));
+        QCOMPARE(fh1::readXmlElements(collision.readAll(), {}).elements.size(), std::size_t{0});
+        QFile route(output + QStringLiteral("/tracks/testbed/Ribbon_00/TrackRoute005.xml"));
+        QVERIFY(route.open(QIODevice::ReadOnly));
+        const fh1::RaceRoute saved = fh1::loaders::raceRoute(route.readAll(), {});
+        QCOMPARE(saved.transforms.size(), std::size_t{2});
+        QVERIFY(!fh1::routeTransformIndex(saved, QStringLiteral("start_location_00")).has_value());
         QSettings().remove(QStringLiteral("edit/outputFolder"));
     }
 

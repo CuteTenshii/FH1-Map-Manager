@@ -175,6 +175,21 @@ private:
     /// Redraws the gameplay objects after they were edited, in the map,
     /// the Objects panel and the 3D world.
     void refreshGameObjects();
+    /// Redraws layer `layer` after its features changed.
+    void refreshLayer(int layer);
+    /// Index into MapData::layers of the layer with id `id`, or -1.
+    int layerIndex(const QString& id) const;
+    /// True if the features of layer `layer` can be deleted.
+    bool canDeleteFeatures(int layer) const;
+    /// Deletes feature `feature` of layer `layer` from the file it came
+    /// from, as one undoable edit.
+    void deleteLayerFeature(int layer, int feature);
+    /// The route and transform a feature of the route markers layer shows.
+    std::optional<std::pair<int, std::size_t>> routeTransformOf(int feature) const;
+    /// Rebuilds the route markers layer from the routes, after they changed.
+    void rebuildRouteMarkers();
+    /// The shown feature under `scenePos` on the map, as layer and feature.
+    std::optional<std::pair<int, int>> featureAt(const QPointF& scenePos) const;
     /// Deletes the gameplay objects `indices`; with `ask`, asks first when
     /// an activity uses one of them.
     void deleteGameObjects(const std::vector<std::size_t>& indices, bool ask = true);
@@ -351,6 +366,12 @@ private:
     std::vector<fh1::Race> m_loadedRaces;
     /// Races whose events are deleted from the database, as loaded.
     std::vector<fh1::Race> m_deletedRaces;
+    /// A layer file and the layer's features, as one deletion changes them
+    /// together.
+    struct LayerFileState {
+        fh1::XmlElementsFile file;
+        std::vector<fh1::Feature> features;
+    };
     /// The race lists as one edit of the database changes them together.
     struct DatabaseState {
         std::vector<fh1::Race> races;

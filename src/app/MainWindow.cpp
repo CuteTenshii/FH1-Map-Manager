@@ -832,7 +832,9 @@ void MainWindow::updateEditActions()
         const std::optional<std::size_t> index = fh1::routeTransformIndex(route, m_selectedRoutePoint);
         pointDeletable = index && fh1::canInsertOrRemove(route, *index);
     }
-    m_deleteAction->setEnabled(objectSelected || pointDeletable || m_selectedRace >= 0);
+    const bool nothingElseSelected = m_selection.layer < 0 && !m_selectedModel;
+    m_deleteAction->setEnabled(objectSelected || pointDeletable || canDeleteFeatures(m_selection.layer)
+        || (m_selectedRace >= 0 && nothingElseSelected));
     m_deleteGroupAction->setEnabled(objectSelected
         && fh1::gameObjectGroup(m_map->gameObjects, static_cast<std::size_t>(m_selection.feature), kGroupRadius).size()
             > 1);
@@ -1082,6 +1084,11 @@ void MainWindow::registerEditableFiles()
         m_edits->addFile(QString(kGameObjectsFile), tr("GameObjs.xml (gameplay objects)"), m_map->gameObjects.mediaPath,
             [this](QString*) -> std::optional<QByteArray> { return fh1::writeGameObjects(m_map->gameObjects); });
     }
+    for (auto [id, file] : m_map->layerFiles.asKeyValueRange()) {
+        m_edits->addFile(QStringLiteral("layer:") + id, QFileInfo(file.mediaPath).fileName(), file.mediaPath,
+            [this, id = id](
+                QString*) -> std::optional<QByteArray> { return fh1::writeXmlElements(m_map->layerFiles.value(id)); });
+    }
     const QString database = m_install.resolve(QStringLiteral("db/gamedb.slt"));
     if (!database.isEmpty() && !m_map->races.empty()) {
         m_edits->addFile(QString(kDatabaseFile), tr("gamedb.slt (race settings)"),
@@ -1114,6 +1121,7 @@ void MainWindow::pushRouteEdit(int route, const fh1::RaceRoute& before, const QS
                 onRouteChanged(route);
             },
             description));
+    rebuildRouteMarkers();
 }
 
 void MainWindow::pushGameObjectsEdit(const GameObjectsState& before, const QString& description)
@@ -1137,6 +1145,7 @@ void MainWindow::pushGameObjectsEdit(const GameObjectsState& before, const QStri
 
 void MainWindow::onRouteChanged(int route)
 {
+    rebuildRouteMarkers();
     if (route == selectedRoute()) {
         showRaceOverlay();
         if (m_selection.layer < 0 && !m_selectedModel) {
@@ -1166,7 +1175,162 @@ void MainWindow::syncGameObjectFeature(std::size_t index)
 
 void MainWindow::refreshGameObjects()
 {
-    const int layer = gameObjectsLayer();
+    refreshLayer(gameObjectsLayer());
+}
+
+int MainWindow::layerIndex(const QString& id) const
+{
+    if (!m_map) {
+        return -1;
+    }
+    for (std::size_t i = 0; i < m_map->layers.size(); ++i) {
+        if (m_map->layers[i].id == id) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool MainWindow::canDeleteFeatures(int layer) const
+{
+    if (!m_map || layer < 0) {
+        return false;
+    }
+    const QString& id = m_map->layers[static_cast<std::size_t>(layer)].id;
+    return layer == gameObjectsLayer() || m_map->layerFiles.contains(id) || id == QLatin1String("trackroutes");
+}
+
+std::optional<std::pair<int, std::size_t>> MainWindow::routeTransformOf(int feature) const
+{
+    const int layer = layerIndex(QStringLiteral("trackroutes"));
+    if (layer < 0 || feature < 0) {
+        return std::nullopt;
+    }
+    const fh1::Feature& marker
+        = m_map->layers[static_cast<std::size_t>(layer)].features[static_cast<std::size_t>(feature)];
+    QString file;
+    for (const auto& [name, value] : marker.properties) {
+        if (name == QLatin1String("Route file")) {
+            file = value;
+        }
+    }
+    for (std::size_t r = 0; r < m_map->raceRoutes.size(); ++r) {
+        if (QFileInfo(m_map->raceRoutes[r].source).completeBaseName() == file) {
+            if (const std::optional<std::size_t> index = fh1::routeTransformIndex(m_map->raceRoutes[r], marker.name)) {
+                return std::pair(static_cast<int>(r), *index);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+void MainWindow::rebuildRouteMarkers()
+{
+    const int layer = layerIndex(QStringLiteral("trackroutes"));
+    if (layer < 0) {
+        return;
+    }
+    fh1::Layer& markers = m_map->layers[static_cast<std::size_t>(layer)];
+    markers.features.clear();
+    for (const fh1::RaceRoute& route : m_map->raceRoutes) {
+        fh1::loaders::appendTrackRoute(route, QFileInfo(route.source).completeBaseName(), markers);
+    }
+    refreshLayer(layer);
+}
+
+std::optional<std::pair<int, int>> MainWindow::featureAt(const QPointF& scenePos) const
+{
+    const double tolerance = kPickRadius / m_view->zoom();
+    std::optional<LayerItem::Hit> best;
+    int bestLayer = -1;
+    for (auto it = m_layerItems.rbegin(); it != m_layerItems.rend(); ++it) {
+        const std::optional<LayerItem::Hit> hit = (*it)->hitTest(scenePos, tolerance);
+        if (hit && (!best || hit->distance < best->distance)) {
+            best = hit;
+            bestLayer = (*it)->layerIndex();
+        }
+    }
+    if (!best) {
+        return std::nullopt;
+    }
+    return std::pair(bestLayer, best->feature);
+}
+
+void MainWindow::deleteLayerFeature(int layer, int feature)
+{
+    if (!canDeleteFeatures(layer) || feature < 0) {
+        return;
+    }
+    fh1::Layer& data = m_map->layers[static_cast<std::size_t>(layer)];
+    if (static_cast<std::size_t>(feature) >= data.features.size()) {
+        return;
+    }
+    if (layer == gameObjectsLayer()) {
+        deleteGameObjects({static_cast<std::size_t>(feature)});
+        return;
+    }
+    const QString name = data.features[static_cast<std::size_t>(feature)].name;
+    if (data.id == QLatin1String("trackroutes")) {
+        const std::optional<std::pair<int, std::size_t>> target = routeTransformOf(feature);
+        if (!target) {
+            return;
+        }
+        const auto [route, index] = *target;
+        fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        // Points other than checkpoints and waypoints are ones a race needs,
+        // so deleting them from a race's route asks first.
+        QStringList races;
+        for (const fh1::Race& race : m_map->races) {
+            if (race.route == route) {
+                races.append(race.name);
+            }
+        }
+        if (!fh1::canInsertOrRemove(state, index) && !races.isEmpty()
+            && QMessageBox::question(this, tr("Delete Route Point"),
+                   tr("%1 is on the route of %2. Deleting it can break the race in the game. Delete it anyway?")
+                       .arg(name, races.join(QStringLiteral(", "))),
+                   QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                != QMessageBox::Yes) {
+            return;
+        }
+        const fh1::RaceRoute before = state;
+        fh1::removeRouteTransform(state, index);
+        clearSelection();
+        pushRouteEdit(route, before, tr("Delete %1").arg(name));
+        if (route == selectedRoute()) {
+            showRaceOverlay();
+        }
+        return;
+    }
+    const QString key = QStringLiteral("layer:") + data.id;
+    fh1::XmlElementsFile& file = m_map->layerFiles[data.id];
+    const LayerFileState before{file, data.features};
+    fh1::removeXmlElement(file, static_cast<std::size_t>(feature));
+    data.features.erase(data.features.begin() + feature);
+    const QString id = data.id;
+    m_edits->push(key,
+        new StateCommand<LayerFileState>(
+            before, LayerFileState{file, data.features},
+            [this, id](const LayerFileState& state) {
+                m_map->layerFiles[id] = state.file;
+                const int index = layerIndex(id);
+                if (index >= 0) {
+                    m_map->layers[static_cast<std::size_t>(index)].features = state.features;
+                    refreshLayer(index);
+                }
+            },
+            tr("Delete %1").arg(name)));
+    refreshLayer(layer);
+    if (id == QLatin1String("collobjs")) {
+        statusBar()->showMessage(tr("Deleted the collision of %1; its model stays on the map, as it is placed in "
+                                    "bin.zip")
+                                     .arg(name),
+            10000);
+    }
+}
+
+void MainWindow::refreshLayer(int layer)
+{
     if (layer < 0 || static_cast<std::size_t>(layer) >= m_layerItems.size()) {
         return;
     }
@@ -1181,8 +1345,14 @@ void MainWindow::refreshGameObjects()
     m_view->setLabelSources({});
     LayerItem*& slot = m_layerItems[static_cast<std::size_t>(layer)];
     const fh1::Layer& data = m_map->layers[static_cast<std::size_t>(layer)];
-    auto* item = new PointLayerItem(data, m_map->calibration, layer, markerRadiusFor(data.id));
-    item->setIcons(m_icons);
+    LayerItem* item = nullptr;
+    if (data.kind == fh1::FeatureKind::Point) {
+        auto* points = new PointLayerItem(data, m_map->calibration, layer, markerRadiusFor(data.id));
+        points->setIcons(m_icons);
+        item = points;
+    } else {
+        item = new ShapeLayerItem(data, m_map->calibration, layer);
+    }
     item->setZValue(slot->zValue());
     m_scene->removeItem(slot);
     delete slot;
@@ -1290,6 +1460,21 @@ void MainWindow::deleteSelection(bool withGroup)
         const auto index = static_cast<std::size_t>(m_selection.feature);
         deleteGameObjects(withGroup ? fh1::gameObjectGroup(m_map->gameObjects, index, kGroupRadius)
                                     : std::vector<std::size_t>{index});
+        return;
+    }
+    if (canDeleteFeatures(m_selection.layer)) {
+        deleteLayerFeature(m_selection.layer, m_selection.feature);
+        return;
+    }
+    // What is selected decides; a race only when nothing else is.
+    if (m_selection.layer >= 0) {
+        statusBar()->showMessage(tr("%1 cannot be deleted: its file is binary or packed in an archive")
+                                     .arg(m_map->layers[static_cast<std::size_t>(m_selection.layer)].title),
+            8000);
+        return;
+    }
+    if (m_selectedModel) {
+        statusBar()->showMessage(tr("Models of the 3D world cannot be deleted yet"), 8000);
         return;
     }
     if (m_selectedRace >= 0) {
@@ -1409,6 +1594,12 @@ void MainWindow::onTableContextMenu(const QPoint& position)
     if (location.layer == gameObjectsLayer()) {
         menu.addSeparator();
         addDeleteGameObjectActions(menu, static_cast<std::size_t>(location.feature));
+    } else if (canDeleteFeatures(location.layer)) {
+        menu.addSeparator();
+        m_syncingSelection = true;
+        selectFeature(location.layer, location.feature, false);
+        m_syncingSelection = false;
+        menu.addAction(m_deleteAction);
     }
     menu.exec(m_table->viewport()->mapToGlobal(position));
 }
@@ -2718,6 +2909,12 @@ void MainWindow::onMapContextMenu(const QPointF& scenePos, const QPoint& globalP
         menu.addSeparator();
     } else if (object) {
         addDeleteGameObjectActions(menu, *object);
+        menu.addSeparator();
+    } else if (const std::optional<std::pair<int, int>> hit = featureAt(scenePos);
+        hit && canDeleteFeatures(hit->first)) {
+        // The menu's Delete is the Edit menu's, which acts on the selection.
+        selectFeature(hit->first, hit->second, false);
+        menu.addAction(m_deleteAction);
         menu.addSeparator();
     }
     menu.addAction(tr("Copy World Position (X, Z)"), this, [world] {
