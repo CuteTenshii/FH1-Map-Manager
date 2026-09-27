@@ -162,8 +162,9 @@ private:
 
     void releaseTile(GpuTile& tile);
     /// Draws the batches of the `visible` tiles that are (or are not)
-    /// backdrop terrain, with the world program bound. Backdrop chunks not
-    /// drawn from `zone` (see fh1::WorldChunk::visibleFrom) are left out.
+    /// backdrop terrain, with the world program bound. Of backdrop chunks
+    /// not drawn from `zone` (see fh1::WorldChunk::visibleFrom), only the
+    /// parts below the camera are drawn.
     void drawBatches(
         const std::vector<std::size_t>& visible, bool backdrop, int zone, int texturedLocation, Stats& stats);
     void addTextureUser(std::uint32_t id);
@@ -184,4 +185,5 @@ private:
     bool m_initialized = false;
     QString m_error;
     std::unique_ptr<QOpenGLShaderProgram> m_program;
+    int m_belowCameraLocation = -1;
 };

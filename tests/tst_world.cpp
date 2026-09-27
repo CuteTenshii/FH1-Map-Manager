@@ -1185,7 +1185,9 @@ private slots:
             QVERIFY(chunk.zones.empty());
         }
 
-        // The renderer draws the backdrop only from zone 1.
+        // From the zone that lists it, the renderer draws the backdrop; from
+        // another, only where it lies below the camera, so it fills gaps in
+        // the ground without hanging over the view.
         QSurfaceFormat format;
         format.setRenderableType(QSurfaceFormat::OpenGL);
         format.setVersion(3, 3);
@@ -1202,18 +1204,29 @@ private slots:
         WorldRenderer renderer;
         QVERIFY2(renderer.initialize(), qPrintable(renderer.errorString()));
         renderer.setGrid(&grid);
-        WorldCamera camera;
-        camera.pitch = -1.5F;
         const QSize size(32, 32);
         QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
         fbo.bind();
-        for (const auto& [x, expectedCalls] : {std::pair{100.0F, 1}, std::pair{250.0F, 2}}) {
-            camera.position = QVector3D(x, 400.0F, rowPitch / 2);
+        const auto centreIsSky = [&](const QVector3D& position, float pitch) {
+            WorldCamera camera;
+            camera.position = position;
+            camera.pitch = pitch;
             for (const TileRequest& request : renderer.requests(camera, {})) {
                 renderer.upload(request.tile, request.state, fh1::buildTileMesh(archive, *index, request.chunks));
             }
-            QCOMPARE(renderer.draw(camera, size).drawCalls, expectedCalls);
-        }
+            renderer.draw(camera, size);
+            const QColor centre = fbo.toImage().pixelColor(size.width() / 2, size.height() / 2);
+            const QVector3D fog = WorldRenderer::fogColour();
+            return std::abs(centre.redF() - fog.x()) < 0.02F && std::abs(centre.greenF() - fog.y()) < 0.02F
+                && std::abs(centre.blueF() - fog.z()) < 0.02F;
+        };
+        // Below the backdrop (5 m up), looking up: hidden from zone 0,
+        // drawn from zone 1.
+        QVERIFY(centreIsSky(QVector3D(100.0F, 2.0F, rowPitch / 2), 1.5F));
+        QVERIFY(!centreIsSky(QVector3D(250.0F, 2.0F, rowPitch / 2), 1.5F));
+        // From zone 0, high up, looking down beside the ground: the backdrop
+        // shows where the ground has a gap.
+        QVERIFY(!centreIsSky(QVector3D(30.0F, 400.0F, rowPitch / 2), -1.5F));
         fbo.release();
         renderer.release();
     }

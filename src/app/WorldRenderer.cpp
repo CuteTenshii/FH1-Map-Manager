@@ -47,6 +47,8 @@ uniform vec3 uCamera;
 uniform vec3 uSunDirection;
 uniform vec3 uFogColour;
 uniform float uFogDistance;
+// Drawing only what lies below the camera.
+uniform bool uBelowCameraOnly;
 
 // Geometry without a loaded texture: a plain ground colour, greener where
 // the surface is level and a neutral rock tone on steep faces.
@@ -58,6 +60,9 @@ vec3 untexturedColour(float up)
 
 void main()
 {
+    if (uBelowCameraOnly && vPosition.y > uCamera.y) {
+        discard;
+    }
     vec3 normal = normalize(gl_FrontFacing ? vNormal : -vNormal);
     float up = clamp(normal.y, 0.0, 1.0);
 
@@ -554,6 +559,7 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     m_program->setUniformValue("uFogDistance", fogDistance());
     m_program->setUniformValue("uDiffuse", static_cast<GLint>(kDiffuseUnit));
     const int texturedLocation = m_program->uniformLocation("uTextured");
+    m_belowCameraLocation = m_program->uniformLocation("uBelowCameraOnly");
     glActiveTexture(GL_TEXTURE0 + kDiffuseUnit);
 
     const auto& tiles = m_grid->tiles();
@@ -571,7 +577,10 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     // the backdrop still shows, in place, where it is alone. Near the
     // camera it can lie well above the ground and hang over the view like
     // a ceiling; the zone the camera is in says which backdrop pieces the
-    // game draws from there.
+    // game draws from there. The others still fill the cracks between
+    // detailed ground pieces of different levels of detail, so they are
+    // drawn below the camera's height, where they can only show through
+    // such gaps.
     const fh1::ZoneGrid* zones = m_grid->index().zoneGrid();
     const int zone = zones != nullptr ? zones->zoneAt(camera.position.x(), camera.position.z()) : -1;
     for (const bool backdrop : {false, true}) {
@@ -599,9 +608,8 @@ void WorldRenderer::drawBatches(
             if (batch.backdrop != backdrop) {
                 continue;
             }
-            if (batch.chunk < chunks.size() && !chunks[batch.chunk].visibleFrom(zone)) {
-                continue;
-            }
+            const bool fillOnly = batch.chunk < chunks.size() && !chunks[batch.chunk].visibleFrom(zone);
+            m_program->setUniformValue(m_belowCameraLocation, fillOnly);
             GLuint name = 0;
             if (batch.texture != fh1::TileMesh::kNoTexture) {
                 const auto it = m_textures.find(batch.texture);
@@ -618,4 +626,5 @@ void WorldRenderer::drawBatches(
             ++stats.drawCalls;
         }
     }
+    m_program->setUniformValue(m_belowCameraLocation, false);
 }
