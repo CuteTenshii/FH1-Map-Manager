@@ -7,6 +7,7 @@
 #include "Races.h"
 #include "StringTable.h"
 #include "XboxTexture.h"
+#include "XmlElements.h"
 
 #include <QDir>
 #include <QFile>
@@ -347,6 +348,27 @@ void loadRaces(const Context& ctx, const QHash<int, std::vector<QVector3D>>& rac
     }
 }
 
+/// Keeps `data`, the file at `path` under the media folder that `layer` was
+/// read from, for deleting the layer's features; only when its elements
+/// line up with the features one for one.
+void keepForEditing(const Context& ctx, const Layer& layer, const QString& path, const QByteArray& data)
+{
+    try {
+        XmlElementsFile file = readXmlElements(data, layer.source);
+        if (file.elements.size() != layer.features.size()) {
+            ctx.warn(QStringLiteral("%1 holds %2 elements for %3 features; they cannot be deleted")
+                    .arg(layer.source)
+                    .arg(file.elements.size())
+                    .arg(layer.features.size()));
+            return;
+        }
+        file.mediaPath = QDir(ctx.install().mediaPath()).relativeFilePath(ctx.install().resolve(path));
+        ctx.map().layerFiles[layer.id] = std::move(file);
+    } catch (const LoadError& e) {
+        ctx.warn(QString::fromStdString(e.what()));
+    }
+}
+
 /// Reads every activity config of the track from gamemodes.zip.
 std::vector<Activity> loadActivities(const Context& ctx)
 {
@@ -558,19 +580,22 @@ MapData MapLoader::load(const GameInstall& install, const QString& trackFolder, 
 
     // Layers are stored bottom to top: broad areas first, point markers last.
     ctx.step(QStringLiteral("Reading post-processing zones"));
+    // Colorado ships only the _Safe variant; the menu scenes ship only the
+    // plain one.
+    QString zonesName = QStringLiteral("PostProcessingZones_Safe.xml");
+    if (install.resolve(ctx.ribbonPath(zonesName)).isEmpty()) {
+        zonesName = QStringLiteral("PostProcessingZones.xml");
+    }
+    const QByteArray zonesData = ctx.readMediaFile(ctx.ribbonPath(zonesName));
     if (Layer* zones = ctx.addLayer([&] {
-            // Colorado ships only the _Safe variant; the menu scenes ship only
-            // the plain one.
-            QString name = QStringLiteral("PostProcessingZones_Safe.xml");
-            if (install.resolve(ctx.ribbonPath(name)).isEmpty()) {
-                name = QStringLiteral("PostProcessingZones.xml");
-            }
-            const QByteArray data = ctx.readMediaFile(ctx.ribbonPath(name));
-            return data.isNull() ? Layer{} : loaders::postProcessingZones(data, QStringLiteral("Ribbon_00/") + name);
+            return zonesData.isNull()
+                ? Layer{}
+                : loaders::postProcessingZones(zonesData, QStringLiteral("Ribbon_00/") + zonesName);
         })) {
         for (Feature& zone : zones->features) {
             zone.label = zone.name;
         }
+        keepForEditing(ctx, *zones, ctx.ribbonPath(zonesName), zonesData);
     }
 
     const QHash<int, std::vector<QVector3D>> racingLines = loadAiRoutes(ctx);
@@ -583,20 +608,27 @@ MapData MapLoader::load(const GameInstall& install, const QString& trackFolder, 
     });
 
     ctx.step(QStringLiteral("Reading collision objects"));
-    ctx.addLayer([&] {
-        const QByteArray data = ctx.readMediaFile(ctx.ribbonPath(QStringLiteral("CollObjs.xml")));
-        return data.isNull()
-            ? Layer{}
-            : loaders::placements(data, QStringLiteral("collobjs"), QStringLiteral("Collision objects"),
-                  QStringLiteral("Ribbon_00/CollObjs.xml"), QStringLiteral("PhysicsType"));
-    });
+    const QString collisionPath = ctx.ribbonPath(QStringLiteral("CollObjs.xml"));
+    const QByteArray collisionData = ctx.readMediaFile(collisionPath);
+    if (const Layer* collision = ctx.addLayer([&] {
+            return collisionData.isNull()
+                ? Layer{}
+                : loaders::placements(collisionData, QStringLiteral("collobjs"), QStringLiteral("Collision objects"),
+                      QStringLiteral("Ribbon_00/CollObjs.xml"), QStringLiteral("PhysicsType"));
+        })) {
+        keepForEditing(ctx, *collision, collisionPath, collisionData);
+    }
 
     ctx.step(QStringLiteral("Reading particle emitters"));
-    ctx.addLayer([&] {
-        const QByteArray data = ctx.readMediaFile(ctx.ribbonPath(QStringLiteral("ParticleEmitters.xml")));
-        return data.isNull() ? Layer{}
-                             : loaders::particleEmitters(data, QStringLiteral("Ribbon_00/ParticleEmitters.xml"));
-    });
+    const QString particlesPath = ctx.ribbonPath(QStringLiteral("ParticleEmitters.xml"));
+    const QByteArray particlesData = ctx.readMediaFile(particlesPath);
+    if (const Layer* particles = ctx.addLayer([&] {
+            return particlesData.isNull()
+                ? Layer{}
+                : loaders::particleEmitters(particlesData, QStringLiteral("Ribbon_00/ParticleEmitters.xml"));
+        })) {
+        keepForEditing(ctx, *particles, particlesPath, particlesData);
+    }
 
     loadTrackRoutes(ctx);
     loadRaces(ctx, racingLines);

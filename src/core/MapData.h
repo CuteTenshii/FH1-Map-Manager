@@ -3,6 +3,7 @@
 #include "GameObjects.h"
 #include "MapCalibration.h"
 #include "ScriptReferences.h"
+#include "XmlElements.h"
 
 #include <QColor>
 #include <QHash>
@@ -174,6 +175,10 @@ struct MapData {
     /// the whole game. The list of every event's activation
     /// (career_event_activations.xml) is left out, as each event has one.
     ScriptReferences scripts;
+    /// The files of the layers whose features can be deleted, by layer id
+    /// ("collobjs", "particles", "ppzones"): their elements are the layer's
+    /// features in the same order.
+    QHash<QString, XmlElementsFile> layerFiles;
     /// The in-game map's icons, keyed by its `activity_type` names.
     QHash<QString, QImage> icons;
     /// Non-fatal problems met while loading, e.g. a missing optional file.

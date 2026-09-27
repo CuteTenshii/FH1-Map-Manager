@@ -66,6 +66,8 @@ add_library(fh1core STATIC
     src/core/WorldTiles.h
     src/core/XboxTexture.cpp
     src/core/XboxTexture.h
+    src/core/XmlElements.cpp
+    src/core/XmlElements.h
     src/core/ZoneGrid.cpp
     src/core/ZoneGrid.h
 )

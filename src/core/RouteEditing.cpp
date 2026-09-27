@@ -312,6 +312,18 @@ bool removeRoutePoint(RaceRoute& route, std::size_t index)
     return true;
 }
 
+bool removeRouteTransform(RaceRoute& route, std::size_t index)
+{
+    if (canInsertOrRemove(route, index)) {
+        return removeRoutePoint(route, index);
+    }
+    if (index >= route.transforms.size()) {
+        return false;
+    }
+    route.transforms.erase(route.transforms.begin() + static_cast<std::ptrdiff_t>(index));
+    return true;
+}
+
 std::optional<std::size_t> routeTransformIndex(const RaceRoute& route, const QString& name)
 {
     for (std::size_t i = 0; i < route.transforms.size(); ++i) {

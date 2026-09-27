@@ -14,6 +14,7 @@
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
+#include "XmlElements.h"
 #include "ZoneGrid.h"
 
 #include <QTest>
@@ -371,6 +372,28 @@ private slots:
         QVERIFY(pruned.open(without.fileName()));
         QCOMPARE(pruned.races(QStringLiteral("colorado")).size(), map.races.size() - 1);
         QVERIFY(pruned.eventReferences(blitz->eventRow).empty());
+    }
+
+    void layerFilesSaveUnchanged()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        const fh1::MapData map = fh1::MapLoader::load(install, QStringLiteral("colorado"));
+        QCOMPARE(map.layerFiles.size(), 3);
+        for (auto [id, file] : map.layerFiles.asKeyValueRange()) {
+            QFile original(QDir(install.mediaPath()).filePath(file.mediaPath));
+            QVERIFY2(original.open(QIODevice::ReadOnly), qPrintable(file.mediaPath));
+            QVERIFY2(fh1::writeXmlElements(file) == original.readAll(), qPrintable(file.mediaPath));
+            // Removing the first element leaves the rest, renumbered where
+            // the file numbers them.
+            fh1::XmlElementsFile removed = file;
+            fh1::removeXmlElement(removed, 0);
+            const fh1::XmlElementsFile reread = fh1::readXmlElements(fh1::writeXmlElements(removed), file.mediaPath);
+            QCOMPARE(reread.elements.size(), file.elements.size() - 1);
+            QCOMPARE(reread.numbered, file.numbered);
+        }
+        QVERIFY(map.layerFiles.value(QStringLiteral("collobjs")).numbered);
+        QVERIFY(!map.layerFiles.value(QStringLiteral("particles")).numbered);
     }
 
     void propPlacements()

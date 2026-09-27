@@ -6,6 +6,7 @@
 #include "Races.h"
 #include "RouteEditing.h"
 #include "ScriptReferences.h"
+#include "XmlElements.h"
 
 #include <QDir>
 #include <QFile>
@@ -591,6 +592,41 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(
             fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0 GameplayID='A'></Obj0></GameObjs>", {}));
         QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::readGameObjects("<GameObjs><Obj0>", {}));
+    }
+
+    void xmlElementsRemoveAndRenumber()
+    {
+        // Numbered objects, with a byte-order mark and a comment kept.
+        const QByteArray numbered = "\xEF\xBB\xBF<?xml version=\"1.0\" ?>\r\n<CollObjs>\r\n"
+                                    "\t<Obj0 PhysicsType=\"A\">\r\n\t\t<Pos x=\"1\"/>\r\n\t</Obj0>\r\n"
+                                    "\t<!-- B -->\r\n"
+                                    "\t<Obj1 PhysicsType=\"B\">\r\n\t\t<Pos x=\"2\"/>\r\n\t</Obj1>\r\n"
+                                    "\t<Obj2 PhysicsType=\"C\">\r\n\t\t<Pos x=\"3\"/>\r\n\t</Obj2>\r\n"
+                                    "</CollObjs>\r\n";
+        fh1::XmlElementsFile file = fh1::readXmlElements(numbered, QStringLiteral("CollObjs.xml"));
+        QCOMPARE(file.elements.size(), std::size_t{3});
+        QVERIFY(file.numbered);
+        QCOMPARE(fh1::writeXmlElements(file), numbered);
+        fh1::removeXmlElement(file, 1);
+        const QByteArray expected = "\xEF\xBB\xBF<?xml version=\"1.0\" ?>\r\n<CollObjs>\r\n"
+                                    "\t<Obj0 PhysicsType=\"A\">\r\n\t\t<Pos x=\"1\"/>\r\n\t</Obj0>\r\n"
+                                    "\t<Obj1 PhysicsType=\"C\">\r\n\t\t<Pos x=\"3\"/>\r\n\t</Obj1>\r\n"
+                                    "</CollObjs>\r\n";
+        QCOMPARE(fh1::writeXmlElements(file), expected);
+
+        // Elements with names of their own are removed and nothing renamed.
+        const QByteArray emitters
+            = "<ParticleEmitters>\n  <SimpleEmitter>\n    <Name value=\"a\" />\n  </SimpleEmitter>\n"
+              "  <SimpleEmitter>\n    <Name value=\"b\" />\n  </SimpleEmitter>\n</ParticleEmitters>\n";
+        fh1::XmlElementsFile list = fh1::readXmlElements(emitters, {});
+        QVERIFY(!list.numbered);
+        fh1::removeXmlElement(list, 0);
+        QCOMPARE(fh1::writeXmlElements(list),
+            QByteArray("<ParticleEmitters>\n  <SimpleEmitter>\n    <Name value=\"b\" />\n  </SimpleEmitter>\n"
+                       "</ParticleEmitters>\n"));
+
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::readXmlElements("<A><B>\xC3\xA9</B></A>", {}));
+        QVERIFY_THROWS_EXCEPTION(fh1::LoadError, fh1::readXmlElements("<A><B>", {}));
     }
 
     void scriptReferences()

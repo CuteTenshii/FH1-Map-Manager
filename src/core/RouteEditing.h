@@ -45,6 +45,11 @@ std::optional<std::size_t> insertRoutePointAfter(RaceRoute& route, std::size_t i
 /// `index` is neither kind.
 bool removeRoutePoint(RaceRoute& route, std::size_t index);
 
+/// Removes transform `index`: a checkpoint or waypoint as removeRoutePoint()
+/// does, anything else on its own. Returns false if there is no such
+/// transform.
+bool removeRouteTransform(RaceRoute& route, std::size_t index);
+
 /// The index of the transform named `name`, or nothing.
 std::optional<std::size_t> routeTransformIndex(const RaceRoute& route, const QString& name);
 
