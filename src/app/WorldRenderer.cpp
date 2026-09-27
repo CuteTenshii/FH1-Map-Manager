@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 namespace {
 
@@ -17,6 +18,12 @@ constexpr float kFieldOfView = WorldRenderer::kFieldOfViewDegrees;
 /// so a camera moving back and forth does not rebuild them constantly.
 constexpr float kStreamMargin = 1.1F;
 constexpr float kEvictMargin = 1.3F;
+/// Metres of reach added per metre of clearance. From straight above, the
+/// edges of a view are about twice as far as the ground under the camera.
+constexpr float kReachPerClearance = 2.0F;
+/// The near plane moves out with the clearance, by this fraction of it, to
+/// keep depth precise when the far plane is kilometres away.
+constexpr float kNearPlanePerClearance = 0.02F;
 
 const char* const kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPosition;
@@ -472,16 +479,46 @@ bool WorldRenderer::texturesPending() const
     });
 }
 
+float WorldRenderer::clearance(const WorldCamera& camera) const
+{
+    if (m_grid == nullptr) {
+        return 0.0F;
+    }
+    // Tile bounds include far-off backdrop meshes; the lowest top of the
+    // tiles under the camera is the closest cheap guess at the ground.
+    std::optional<float> ground;
+    for (const auto& tile : m_grid->tiles()) {
+        if (camera.position.x() >= tile.boundsMin.x() && camera.position.x() <= tile.boundsMax.x()
+            && camera.position.z() >= tile.boundsMin.z() && camera.position.z() <= tile.boundsMax.z()) {
+            ground = ground ? std::min(*ground, tile.boundsMax.y()) : tile.boundsMax.y();
+        }
+    }
+    return ground ? std::max(0.0F, camera.position.y() - *ground) : 0.0F;
+}
+
+float WorldRenderer::reach(const WorldCamera& camera) const
+{
+    return m_viewDistance + kReachPerClearance * clearance(camera);
+}
+
+float WorldRenderer::tileDistance(const fh1::WorldTileGrid::Tile& tile, const WorldCamera& camera) const
+{
+    const float along = m_grid->distanceTo(tile, camera.position.x(), camera.position.z());
+    const float up = std::max(0.0F, camera.position.y() - tile.boundsMax.y());
+    return std::hypot(along, up);
+}
+
 std::vector<TileRequest> WorldRenderer::requests(const WorldCamera& camera, const std::vector<int>& inFlightState) const
 {
     std::vector<TileRequest> result;
     if (m_grid == nullptr) {
         return result;
     }
+    const float range = reach(camera) * kStreamMargin;
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
-        const float distance = m_grid->distanceTo(tiles[i], camera.position.x(), camera.position.z());
-        if (distance > m_viewDistance * kStreamMargin) {
+        const float distance = tileDistance(tiles[i], camera);
+        if (distance > range) {
             continue;
         }
         const int state = m_grid->stateAt(tiles[i], distance);
@@ -501,11 +538,11 @@ bool WorldRenderer::isComplete(const WorldCamera& camera) const
     if (m_grid == nullptr) {
         return false;
     }
+    const float range = reach(camera) * kStreamMargin;
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
-        const float distance = m_grid->distanceTo(tiles[i], camera.position.x(), camera.position.z());
-        if (distance <= m_viewDistance * kStreamMargin
-            && (m_tiles[i].state != m_grid->stateAt(tiles[i], distance) || m_tiles[i].stale)) {
+        const float distance = tileDistance(tiles[i], camera);
+        if (distance <= range && (m_tiles[i].state != m_grid->stateAt(tiles[i], distance) || m_tiles[i].stale)) {
             return false;
         }
     }
@@ -580,10 +617,10 @@ bool WorldRenderer::evictDistant(const WorldCamera& camera)
         return false;
     }
     bool evicted = false;
+    const float range = reach(camera) * kEvictMargin;
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
-        if (m_tiles[i].state >= 0
-            && m_grid->distanceTo(tiles[i], camera.position.x(), camera.position.z()) > m_viewDistance * kEvictMargin) {
+        if (m_tiles[i].state >= 0 && tileDistance(tiles[i], camera) > range) {
             releaseTile(m_tiles[i]);
             evicted = true;
         }
@@ -610,7 +647,8 @@ QMatrix4x4 WorldRenderer::viewProjection(const WorldCamera& camera, QSize viewpo
     QMatrix4x4 projection;
     const float aspect
         = viewport.height() > 0 ? static_cast<float>(viewport.width()) / static_cast<float>(viewport.height()) : 1.0F;
-    projection.perspective(kFieldOfView, aspect, m_nearPlane, m_viewDistance * 1.2F);
+    projection.perspective(
+        kFieldOfView, aspect, std::max(m_nearPlane, clearance(camera) * kNearPlanePerClearance), reach(camera) * 1.2F);
     return projection * view;
 }
 
@@ -636,7 +674,7 @@ WorldRenderer::Stats WorldRenderer::draw(const WorldCamera& camera, QSize viewpo
     m_program->setUniformValue("uCamera", camera.position);
     m_program->setUniformValue("uSunDirection", QVector3D(0.45F, 0.8F, 0.35F).normalized());
     m_program->setUniformValue("uFogColour", kFogColour);
-    m_program->setUniformValue("uFogDistance", fogDistance());
+    m_program->setUniformValue("uFogDistance", fogDistance(camera));
     m_program->setUniformValue("uDiffuse", static_cast<GLint>(kDiffuseUnit));
     m_program->setUniformValue("uLayerB", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::LayerB));
     m_program->setUniformValue("uLayerC", static_cast<GLint>(kDiffuseUnit + 1 + fh1::TileMesh::LayerC));

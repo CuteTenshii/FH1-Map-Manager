@@ -312,7 +312,7 @@ std::optional<fh1::PickHit> WorldView3D::pickModelAt(const QPointF& position) co
             candidates.push_back(model.chunk);
         }
     }
-    return fh1::pickModel(*m_archive, *m_index, candidates, m_camera.position, direction, m_renderer.viewDistance());
+    return fh1::pickModel(*m_archive, *m_index, candidates, m_camera.position, direction, m_renderer.reach(m_camera));
 }
 
 void WorldView3D::requestTiles()
@@ -448,7 +448,8 @@ void WorldView3D::paintGL()
         for (EntityRenderer* entities : {&m_entities, &m_overlay}) {
             if (entities->isReady()) {
                 entities->draw(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
-                    m_renderer.fogDistance(), WorldRenderer::fogColour(), static_cast<float>(devicePixelRatioF()));
+                    m_renderer.fogDistance(m_camera), WorldRenderer::fogColour(),
+                    static_cast<float>(devicePixelRatioF()));
             }
         }
     }
@@ -688,7 +689,7 @@ void WorldView3D::mouseReleaseEvent(QMouseEvent* event)
         const QSize viewport = size() * devicePixelRatioF();
         const std::optional<EntityRenderer::FeatureRef> hit
             = m_entities.pick(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
-                event->position() * ratio, kPickTolerance * ratio, m_renderer.viewDistance(), ratio);
+                event->position() * ratio, kPickTolerance * ratio, m_renderer.reach(m_camera), ratio);
         if (hit) {
             emit entityClicked(hit->layer, hit->feature);
             return;

@@ -1764,16 +1764,31 @@ private slots:
         QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
         fbo.bind();
         const WorldRenderer::Stats stats = renderer.draw(camera, size);
+        // From 12 km up, further than the view distance, the reach grows
+        // with the height, so the ground is still drawn, not clipped or
+        // lost in the fog.
+        WorldCamera high = camera;
+        high.position.setY(12000.0F);
+        high.pitch = -1.55F;
+        QCOMPARE(renderer.clearance(high), 12000.0F);
+        QCOMPARE(renderer.reach(high), renderer.viewDistance() + 24000.0F);
+        QVERIFY(renderer.isComplete(high));
+        renderer.draw(high, size);
+        fbo.release();
+        const QImage fromAbove = fbo.toImage();
+        fbo.bind();
+        renderer.draw(camera, size);
         fbo.release();
         const QImage image = fbo.toImage();
         renderer.release();
         QCOMPARE(stats.drawnTiles, 1);
         QCOMPARE(stats.drawnTriangles, 2);
         // Looking down at the ground: the centre is lit ground, not sky.
-        const QColor centre = image.pixelColor(32, 32);
         const QColor sky(179, 199, 219);
-        QVERIFY2(
-            std::abs(centre.red() - sky.red()) + std::abs(centre.blue() - sky.blue()) > 30, qPrintable(centre.name()));
+        for (const QColor& centre : {image.pixelColor(32, 32), fromAbove.pixelColor(32, 32)}) {
+            QVERIFY2(std::abs(centre.red() - sky.red()) + std::abs(centre.blue() - sky.blue()) > 30,
+                qPrintable(centre.name()));
+        }
     }
 
     void drawsAndPicksMapEntities()
@@ -1854,7 +1869,7 @@ private slots:
         QOpenGLFramebufferObject fbo(size, QOpenGLFramebufferObject::Depth);
         fbo.bind();
         world.draw(camera, size);
-        entities.draw(matrix, size, camera.position, world.fogDistance(), WorldRenderer::fogColour(), 1.0F);
+        entities.draw(matrix, size, camera.position, world.fogDistance(camera), WorldRenderer::fogColour(), 1.0F);
         fbo.release();
         const QImage image = fbo.toImage();
         const QColor sky = image.pixelColor(2, 2);

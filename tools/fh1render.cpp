@@ -232,7 +232,7 @@ int main(int argc, char** argv)
     const QMatrix4x4 worldViewProjection = renderer.worldViewProjection(camera, size);
     if (entities.isReady()) {
         entities.draw(
-            worldViewProjection, size, camera.position, renderer.fogDistance(), WorldRenderer::fogColour(), 1.0F);
+            worldViewProjection, size, camera.position, renderer.fogDistance(camera), WorldRenderer::fogColour(), 1.0F);
     }
     fbo.release();
     QImage image = fbo.toImage();

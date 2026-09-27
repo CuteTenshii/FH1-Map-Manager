@@ -78,6 +78,12 @@ public:
     /// closer to small objects at the cost of depth precision far away.
     void setNearPlane(float metres) { m_nearPlane = metres; }
     float viewDistance() const { return m_viewDistance; }
+    /// How high `camera` is above the world under it, estimated from the
+    /// tile bounds there (0 at or below them).
+    float clearance(const WorldCamera& camera) const;
+    /// How far `camera` sees: the view distance, lengthened by its
+    /// clearance so that a view from high up still reaches the ground.
+    float reach(const WorldCamera& camera) const;
 
     /// Tiles whose loaded state differs from what `camera` needs, nearest
     /// first. Tiles with a build running (inFlightState[tile] >= 0) are left
@@ -125,7 +131,7 @@ public:
 
     /// Colour and distance scale of the fog draw() applies.
     static QVector3D fogColour();
-    float fogDistance() const { return m_viewDistance * kFogFraction; }
+    float fogDistance(const WorldCamera& camera) const { return reach(camera) * kFogFraction; }
     qint64 uploadedTriangles() const { return m_uploadedTriangles; }
     int tileCount() const { return static_cast<int>(m_tiles.size()); }
     int loadedState(int tile) const { return m_tiles[static_cast<std::size_t>(tile)].state; }
@@ -134,8 +140,11 @@ public:
     void invalidateTile(int tile);
 
 private:
-    /// Fog distance as a fraction of the view distance.
+    /// Fog distance as a fraction of the reach.
     static constexpr float kFogFraction = 0.75F;
+    /// Distance from `camera` to `tile` that decides its detail and
+    /// whether it is loaded: along the ground, and up to the camera.
+    float tileDistance(const fh1::WorldTileGrid::Tile& tile, const WorldCamera& camera) const;
 
     struct GpuTile {
         GLuint vao = 0;
