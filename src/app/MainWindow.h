@@ -6,6 +6,7 @@
 #include "TrackPlacements.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
+#include "WorldPicking.h"
 
 #include <QFutureWatcher>
 #include <QMainWindow>
@@ -105,7 +106,10 @@ private:
     void saveLayerVisibility() const;
     void selectFeature(int layer, int feature, bool focus);
     void clearSelection();
+    /// Selects a model of the 3D world that a click landed on.
+    void selectModel(const fh1::PickHit& hit);
     void showProperties();
+    void showModelProperties();
     void onMapClicked(const QPointF& scenePos);
     void onCursorMoved(const QPointF& scenePos);
     void onMapContextMenu(const QPointF& scenePos, const QPoint& globalPos);
@@ -169,6 +173,9 @@ private:
     BackgroundItem* m_background = nullptr;
     std::vector<LayerItem*> m_layerItems;
     Selection m_selection;
+    /// The model of the 3D world selected by a click, if any; a map feature
+    /// selection clears it and the other way round.
+    std::optional<fh1::PickHit> m_selectedModel;
 
     QMenu* m_viewMenu = nullptr;
     QDockWidget* m_objectsDock = nullptr;

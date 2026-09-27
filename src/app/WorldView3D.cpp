@@ -10,6 +10,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
@@ -193,6 +194,37 @@ void WorldView3D::focusOnEntity(int layer, int feature)
     setCamera(camera);
 }
 
+void WorldView3D::setHighlightedModel(std::optional<std::uint32_t> chunk)
+{
+    m_highlightedModel = chunk;
+    update();
+}
+
+std::optional<fh1::PickHit> WorldView3D::pickModelAt(const QPointF& position) const
+{
+    if (!m_index || !m_archive || width() <= 0 || height() <= 0) {
+        return std::nullopt;
+    }
+    // The point under the cursor on the far plane, back in world space; the
+    // ray runs from the camera through it.
+    bool invertible = false;
+    const QMatrix4x4 toWorld = m_renderer.worldViewProjection(m_camera, size()).inverted(&invertible);
+    if (!invertible) {
+        return std::nullopt;
+    }
+    const float x = static_cast<float>(2.0 * position.x() / width() - 1.0);
+    const float y = static_cast<float>(1.0 - 2.0 * position.y() / height());
+    const QVector3D farPoint = toWorld.map(QVector3D(x, y, 1.0F));
+    const QVector3D direction = (farPoint - m_camera.position).normalized();
+    std::vector<std::uint32_t> candidates;
+    for (const LoadedModel& model : m_renderer.loadedModels()) {
+        if (model.error.isEmpty()) {
+            candidates.push_back(model.chunk);
+        }
+    }
+    return fh1::pickModel(*m_archive, *m_index, candidates, m_camera.position, direction, m_renderer.viewDistance());
+}
+
 void WorldView3D::requestTiles()
 {
     if (!m_grid) {
@@ -323,6 +355,11 @@ void WorldView3D::paintGL()
     }
     drawOverlay(stats);
 
+    if (m_highlightedModel) {
+        QPainter painter(this);
+        drawModelOutline(painter);
+    }
+
     const bool settledNow = isSettled();
     if (settledNow && !m_wasSettled) {
         m_wasSettled = true;
@@ -395,6 +432,45 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
         painter.drawPath(path);
         painter.fillPath(path, Qt::white);
         y += metrics.height() + 2;
+    }
+}
+
+void WorldView3D::drawModelOutline(QPainter& painter)
+{
+    if (!m_index || !m_highlightedModel || *m_highlightedModel >= m_index->chunks().size()) {
+        return;
+    }
+    const fh1::WorldChunk& chunk = m_index->chunks()[*m_highlightedModel];
+    const QMatrix4x4 toClip = m_renderer.worldViewProjection(m_camera, size());
+    std::array<QVector4D, 8> corners;
+    for (int k = 0; k < 8; ++k) {
+        const QVector3D corner((k & 1) != 0 ? chunk.boundsMax.x() : chunk.boundsMin.x(),
+            (k & 2) != 0 ? chunk.boundsMax.y() : chunk.boundsMin.y(),
+            (k & 4) != 0 ? chunk.boundsMax.z() : chunk.boundsMin.z());
+        corners[static_cast<std::size_t>(k)] = toClip * QVector4D(corner, 1.0F);
+    }
+    const auto toScreen = [this](const QVector4D& clip) {
+        return QPointF((clip.x() / clip.w() + 1.0F) * 0.5F * static_cast<float>(width()),
+            (1.0F - clip.y() / clip.w()) * 0.5F * static_cast<float>(height()));
+    };
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor(255, 210, 60), 2.0));
+    // Corners differing in one bit share an edge. Edges reaching behind the
+    // camera are left out rather than clipped; the rest still frame the
+    // model.
+    for (int a = 0; a < 8; ++a) {
+        for (const int bit : {1, 2, 4}) {
+            const int b = a | bit;
+            if (b == a) {
+                continue;
+            }
+            const QVector4D& p = corners[static_cast<std::size_t>(a)];
+            const QVector4D& q = corners[static_cast<std::size_t>(b)];
+            if (p.w() <= 0.0F || q.w() <= 0.0F) {
+                continue;
+            }
+            painter.drawLine(toScreen(p), toScreen(q));
+        }
     }
 }
 
@@ -497,16 +573,23 @@ void WorldView3D::mouseReleaseEvent(QMouseEvent* event)
     event->accept();
     const QPoint position = event->position().toPoint();
     if (event->button() != Qt::LeftButton || (position - m_pressPosition).manhattanLength() > kClickSlop
-        || !m_renderer.isReady() || m_entities.map() == nullptr) {
+        || !m_renderer.isReady()) {
         return;
     }
-    const auto ratio = static_cast<float>(devicePixelRatioF());
-    const QSize viewport = size() * devicePixelRatioF();
-    const std::optional<EntityRenderer::FeatureRef> hit
-        = m_entities.pick(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
-            event->position() * ratio, kPickTolerance * ratio, m_renderer.viewDistance(), ratio);
-    if (hit) {
-        emit entityClicked(hit->layer, hit->feature);
+    // Map features are drawn over the world and are picked first.
+    if (m_entities.map() != nullptr) {
+        const auto ratio = static_cast<float>(devicePixelRatioF());
+        const QSize viewport = size() * devicePixelRatioF();
+        const std::optional<EntityRenderer::FeatureRef> hit
+            = m_entities.pick(m_renderer.worldViewProjection(m_camera, viewport), viewport, m_camera.position,
+                event->position() * ratio, kPickTolerance * ratio, m_renderer.viewDistance(), ratio);
+        if (hit) {
+            emit entityClicked(hit->layer, hit->feature);
+            return;
+        }
+    }
+    if (const std::optional<fh1::PickHit> model = pickModelAt(event->position())) {
+        emit modelClicked(*model);
     } else {
         emit emptyClicked();
     }

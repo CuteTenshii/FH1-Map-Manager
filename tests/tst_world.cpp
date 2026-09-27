@@ -8,8 +8,10 @@
 #include "TrackTextures.h"
 #include "WorldDebugPanel.h"
 #include "WorldIndex.h"
+#include "WorldPicking.h"
 #include "WorldRenderer.h"
 #include "WorldTiles.h"
+#include "WorldView3D.h"
 #include "XboxTexture.h"
 #include "ZoneGrid.h"
 
@@ -30,6 +32,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <utility>
 #include <zlib.h>
@@ -1813,6 +1816,117 @@ private slots:
         QVERIFY(!panel.previewedTexture().has_value());
         QVERIFY(!modelPreview->model().has_value());
         QCOMPARE(tabs->tabText(0), QStringLiteral("Models (0)"));
+    }
+
+    void picksModels()
+    {
+        // Rays against boxes and triangles.
+        const QVector3D lo(-1, -1, -1);
+        const QVector3D hi(1, 1, 1);
+        QCOMPARE(fh1::rayBoxDistance(QVector3D(0, 0, -10), QVector3D(0, 0, 1), lo, hi), std::optional<float>(9.0F));
+        QVERIFY(!fh1::rayBoxDistance(QVector3D(0, 0, -10), QVector3D(0, 1, 0), lo, hi).has_value());
+        QVERIFY(!fh1::rayBoxDistance(QVector3D(0, 0, -10), QVector3D(0, 0, -1), lo, hi).has_value());
+        QCOMPARE(fh1::rayBoxDistance(QVector3D(0, 0, 0), QVector3D(1, 0, 0), lo, hi), std::optional<float>(0.0F));
+        const QVector3D a(-1, -1, 5);
+        const QVector3D b(1, -1, 5);
+        const QVector3D c(0, 1, 5);
+        QCOMPARE(fh1::rayTriangleDistance(QVector3D(), QVector3D(0, 0, 1), a, b, c), std::optional<float>(5.0F));
+        // Either winding.
+        QCOMPARE(fh1::rayTriangleDistance(QVector3D(), QVector3D(0, 0, 1), a, c, b), std::optional<float>(5.0F));
+        QVERIFY(!fh1::rayTriangleDistance(QVector3D(3, 0, 0), QVector3D(0, 0, 1), a, b, c).has_value());
+
+        // Looking straight down over ground at 0 m, a crate placed at 20 m,
+        // backdrop terrain at 50 m and a placeholder surface at 60 m.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        TestPart placeholder = quad(QStringLiteral("TERR_Zone1_Area1_00"), 600, 600, 60, 30);
+        placeholder.materials.front().name = QStringLiteral("Placeholder001");
+        const TestPlacement crate{0, QVector3D(600, 20, 600), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {100, -1, -1}};
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"),
+                 renderModel({quad(QStringLiteral("Crate_NOLOD"), 0, 0, 0, 2)})},
+                {QStringLiteral("coloradoout.00001.rmb.bin"),
+                    renderModel({quad(QStringLiteral("Terrain_LOD00_01"), 600, 600, 0, 100)})},
+                {QStringLiteral("coloradoout.00002.rmb.bin"),
+                    renderModel({quad(QStringLiteral("TERR_UberLOD_Patch01"), 600, 600, 50, 100)})},
+                {QStringLiteral("coloradoout.00003.rmb.bin"), renderModel({placeholder})},
+                {QStringLiteral("__R00Z00000.pvsz"), zoneFile({crate})}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}, {}, {}}, {0}), archive);
+        QVERIFY(placements.has_value());
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(index.has_value());
+        QCOMPARE(index->chunks().size(), std::size_t{4});
+        std::vector<std::uint32_t> all(index->chunks().size());
+        std::iota(all.begin(), all.end(), 0U);
+        const auto chunkWhere = [&](const std::function<bool(const fh1::WorldChunk&)>& test) {
+            const auto it = std::find_if(index->chunks().begin(), index->chunks().end(), test);
+            return static_cast<std::uint32_t>(it - index->chunks().begin());
+        };
+        const std::uint32_t crateChunk = chunkWhere([](const fh1::WorldChunk& ch) { return ch.placed; });
+        const std::uint32_t groundChunk = chunkWhere(
+            [](const fh1::WorldChunk& ch) { return !ch.placed && !ch.backdrop && ch.boundsMax.y() < 1.0F; });
+
+        const QVector3D down(0, -1, 0);
+        const std::optional<fh1::PickHit> hit
+            = fh1::pickModel(archive, *index, all, QVector3D(600.5F, 100, 600.5F), down, 1000.0F);
+        QVERIFY(hit.has_value());
+        QCOMPARE(hit->chunk, crateChunk);
+        QVERIFY(std::abs(hit->distance - 80.0F) < 1e-3F);
+        QVERIFY((hit->point - QVector3D(600.5F, 20, 600.5F)).length() < 1e-3F);
+        QCOMPARE(hit->triangles, std::size_t{2});
+        // Beside the crate the ray reaches the ground.
+        const std::optional<fh1::PickHit> ground
+            = fh1::pickModel(archive, *index, all, QVector3D(650, 100, 650), down, 1000.0F);
+        QVERIFY(ground.has_value());
+        QCOMPARE(ground->chunk, groundChunk);
+        // Nothing within reach, or nothing at all.
+        QVERIFY(!fh1::pickModel(archive, *index, all, QVector3D(650, 100, 650), down, 50.0F).has_value());
+        QVERIFY(!fh1::pickModel(archive, *index, all, QVector3D(2000, 100, 2000), down, 1000.0F).has_value());
+
+        // The 3D view picks what is under the cursor.
+        if (QGuiApplication::platformName() == QLatin1String("offscreen")) {
+            QSKIP("OpenGL widgets cannot draw on the offscreen platform; run with a display to check the view");
+        }
+        auto sharedArchive = std::make_shared<fh1::ForzaZip>();
+        QVERIFY(sharedArchive->open(archivePath));
+        auto sharedIndex = std::make_shared<const fh1::WorldIndex>(*index);
+        WorldView3D view;
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        format.setVersion(3, 3);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        format.setDepthBufferSize(24);
+        view.setFormat(format);
+        view.resize(200, 200);
+        view.setWorld(sharedArchive, sharedIndex, nullptr);
+        // The view limits the pitch to just short of straight down, which
+        // over 80 m leans the ray about 1.7 m east; the camera starts 1 m
+        // west of the crate's centre so the ray still meets it.
+        WorldCamera camera;
+        camera.position = QVector3D(599.0F, 100, 600.0F);
+        camera.pitch = -1.5707F;
+        view.setCamera(camera);
+        view.show();
+        if (!QTest::qWaitForWindowExposed(&view) || !view.isValid()) {
+            QSKIP("the 3D view has no OpenGL context on this platform");
+        }
+        QVERIFY(QTest::qWaitFor(
+            [&] {
+                view.update();
+                return view.isSettled();
+            },
+            10000));
+        const std::optional<fh1::PickHit> picked = view.pickModelAt(QPointF(100, 100));
+        QVERIFY(picked.has_value());
+        QCOMPARE(picked->chunk, crateChunk);
+        QSignalSpy clicked(&view, &WorldView3D::modelClicked);
+        QTest::mouseClick(&view, Qt::LeftButton, {}, QPoint(100, 100));
+        QCOMPARE(clicked.count(), 1);
+        view.setHighlightedModel(crateChunk);
+        QCOMPARE(view.highlightedModel(), std::optional<std::uint32_t>(crateChunk));
     }
 
     void previewsOneModel()

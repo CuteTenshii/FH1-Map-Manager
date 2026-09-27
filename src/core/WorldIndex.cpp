@@ -24,7 +24,7 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 11;
+constexpr quint32 kCacheVersion = 12;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
 /// How far a transform may be from the world-space one (no move, Z mirrored)
@@ -212,8 +212,9 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
         return it == models.cend() ? nullptr : &it.value();
     };
     QSet<std::uint32_t> placedObjects;
-    const auto addChunk = [&](const LocalModel& model, const Placement& placement, int lod) {
+    const auto addChunk = [&](const LocalModel& model, const Placement& placement, int lod, bool scattered) {
         WorldChunk chunk;
+        chunk.scattered = scattered;
         chunk.entry = model.entry;
         chunk.lod = static_cast<std::int8_t>(lod);
         chunk.group = groupOf(model.header.firstPartName);
@@ -267,7 +268,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
         if (placement == nullptr) {
             continue;
         }
-        addChunk(*model, *placement, std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3));
+        addChunk(*model, *placement, std::clamp(rendermesh::lodLevel(model->header.firstPartName), -1, 3), false);
         placedObjects.insert(placements.drawObject(d));
     }
     // Copies placed by procedural sets. A mesh's levels are its template
@@ -278,7 +279,7 @@ void WorldIndex::placeProps(const QHash<std::uint32_t, LocalModel>& models, cons
             const std::vector<std::uint32_t>& levels = set.meshDraws[instance.mesh];
             for (std::size_t level = 0; level < levels.size(); ++level) {
                 if (const LocalModel* model = modelOf(levels[level])) {
-                    addChunk(*model, instance.placement, static_cast<int>(level));
+                    addChunk(*model, instance.placement, static_cast<int>(level), true);
                     placedObjects.insert(placements.drawObject(levels[level]));
                 }
             }
@@ -435,7 +436,7 @@ bool WorldIndex::save(const QString& path, const QString& signature, QString* er
             out << zone;
         }
         if (c.placed) {
-            out << c.placement.position << c.placement.eventProp;
+            out << c.placement.position << c.placement.eventProp << c.scattered;
             for (const float value : c.placement.rows) {
                 out << value;
             }
@@ -510,7 +511,7 @@ std::optional<WorldIndex> WorldIndex::load(const QString& path, const QString& s
             in >> zone;
         }
         if (c.placed) {
-            in >> c.placement.position >> c.placement.eventProp;
+            in >> c.placement.position >> c.placement.eventProp >> c.scattered;
             for (float& value : c.placement.rows) {
                 in >> value;
             }

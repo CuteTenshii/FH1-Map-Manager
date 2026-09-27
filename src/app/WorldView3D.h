@@ -4,16 +4,19 @@
 #include "ForzaZip.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
+#include "WorldPicking.h"
 #include "WorldRenderer.h"
 #include "WorldTiles.h"
 
 #include <QElapsedTimer>
 #include <QOpenGLWidget>
+#include <QPainter>
 #include <QSet>
 #include <QThreadPool>
 #include <QTimer>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 /// Fly-through 3D view of a track's world geometry.
@@ -61,6 +64,14 @@ public:
     /// its heading.
     void focusOnEntity(int layer, int feature);
 
+    /// Outlines one model of the world (an index into its chunks); nothing
+    /// clears the outline.
+    void setHighlightedModel(std::optional<std::uint32_t> chunk);
+    std::optional<std::uint32_t> highlightedModel() const { return m_highlightedModel; }
+    /// The model a click would pick at `position` (logical pixels): the one
+    /// the view ray meets first among the loaded tiles' models.
+    std::optional<fh1::PickHit> pickModelAt(const QPointF& position) const;
+
     /// True when every tile in range is loaded at the detail its distance
     /// calls for, with its textures, and no decoding is pending.
     bool isSettled() const;
@@ -78,6 +89,9 @@ signals:
     /// Emitted when a click (not a drag) lands on a shown map feature, or on
     /// none.
     void entityClicked(int layer, int feature);
+    /// Emitted when a click lands on no map feature but on a model of the
+    /// world.
+    void modelClicked(const fh1::PickHit& hit);
     void emptyClicked();
     /// Emitted when tiles or textures are loaded or freed, or the world
     /// changes.
@@ -113,6 +127,7 @@ private:
     /// Frees every OpenGL object while the widget's context still exists.
     void releaseGL();
     void drawOverlay(const WorldRenderer::Stats& stats);
+    void drawModelOutline(QPainter& painter);
 
     std::shared_ptr<const fh1::ForzaZip> m_archive;
     std::shared_ptr<const fh1::WorldIndex> m_index;
@@ -130,6 +145,7 @@ private:
     QThreadPool m_pool;
     int m_failedChunks = 0;
     bool m_eventProps = false;
+    std::optional<std::uint32_t> m_highlightedModel;
 
     Camera m_camera;
     float m_speed = 60.0F;

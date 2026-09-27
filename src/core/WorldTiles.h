@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ForzaZip.h"
+#include "RenderMesh.h"
 #include "TrackTextures.h"
 #include "WorldIndex.h"
 
@@ -90,6 +91,21 @@ struct TileMesh {
 
     std::size_t vertexCount() const { return vertices.size() / kFloatsPerVertex; }
 };
+
+/// Materials that are not visible surfaces:
+/// - a lighting effect, such as the glow of the town's lights over the night
+///   sky ("light_pollution.fx" on a 1 km plane), which drawn as a surface
+///   becomes a large opaque wall;
+/// - the placeholder material ("Placeholder001") of an abandoned set of
+///   terrain pieces ("Area04", "TERR_Zone1_Area1_00"), textured "THIS OBJECT
+///   DOES NOT HAVE A FORZA MATERIAL" and partly below the ground. On
+///   Colorado 63 models use it and only it;
+/// - crowd areas ("CrowdTERR" on "Plane004_LOD00" and the like): flat
+///   polygons just above the ground, textured with an orange tile grid,
+///   that mark where spectators stand. On Colorado 48 models use it and
+///   only it.
+/// Such materials are neither drawn nor picked.
+bool isNotSurface(const RenderMesh& mesh, const RenderMesh::Material& material);
 
 /// Decodes and merges `chunks`. Safe to call from several threads at once on
 /// the same archive. Normals are averaged per part from its triangles.

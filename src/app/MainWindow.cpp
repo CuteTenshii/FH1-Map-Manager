@@ -6,6 +6,7 @@
 #include "Loaders.h"
 #include "MapLoader.h"
 #include "MapView.h"
+#include "RenderMesh.h"
 #include "WorldDebugPanel.h"
 #include "WorldView3D.h"
 
@@ -23,6 +24,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -44,6 +46,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <cmath>
 #include <cstdio>
 #include <numbers>
 
@@ -143,6 +146,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&m_worldWatcher, &QFutureWatcher<WorldLoad>::finished, this, &MainWindow::onWorldLoaded);
     connect(m_world3D, &WorldView3D::entityClicked, this,
         [this](int layer, int feature) { selectFeature(layer, feature, false); });
+    connect(m_world3D, &WorldView3D::modelClicked, this, &MainWindow::selectModel);
     connect(m_world3D, &WorldView3D::emptyClicked, this, &MainWindow::clearSelection);
 
     createActions();
@@ -822,6 +826,8 @@ void MainWindow::selectFeature(int layer, int feature, bool focus)
         return;
     }
     LayerItem* item = m_layerItems[static_cast<std::size_t>(layer)];
+    m_selectedModel.reset();
+    m_world3D->setHighlightedModel(std::nullopt);
     if (m_selection.layer >= 0 && m_selection.layer != layer) {
         m_layerItems[static_cast<std::size_t>(m_selection.layer)]->setHighlightedFeature(-1);
     }
@@ -873,11 +879,81 @@ void MainWindow::clearSelection()
     }
     m_selection = {};
     m_world3D->setHighlightedEntity(-1, -1);
+    m_selectedModel.reset();
+    m_world3D->setHighlightedModel(std::nullopt);
     m_properties->setRowCount(0);
     if (!m_syncingSelection) {
         m_syncingSelection = true;
         m_table->clearSelection();
         m_syncingSelection = false;
+    }
+}
+
+void MainWindow::selectModel(const fh1::PickHit& hit)
+{
+    // Only one thing is selected at a time.
+    clearSelection();
+    m_selectedModel = hit;
+    m_world3D->setHighlightedModel(hit.chunk);
+    // The debug panel lists the loaded model files; it shows this one on
+    // its own there.
+    m_debugPanel->showModel(hit.chunk);
+    showModelProperties();
+}
+
+void MainWindow::showModelProperties()
+{
+    m_properties->setRowCount(0);
+    const std::shared_ptr<const fh1::WorldIndex> index = m_world3D->index();
+    const std::shared_ptr<const fh1::ForzaZip> archive = m_world3D->archive();
+    if (!m_selectedModel || !index || !archive || m_selectedModel->chunk >= index->chunks().size()) {
+        return;
+    }
+    const fh1::WorldChunk& chunk = index->chunks()[m_selectedModel->chunk];
+    const auto point = [](const QVector3D& p) {
+        return QStringLiteral("%1, %2, %3").arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1).arg(p.z(), 0, 'f', 1);
+    };
+    const auto metres
+        = [](float value) { return std::isinf(value) ? tr("no limit") : tr("%1 m").arg(value, 0, 'f', 0); };
+    QString file;
+    QString part;
+    if (chunk.entry < archive->entries().size()) {
+        const fh1::ZipEntry& entry = archive->entries()[chunk.entry];
+        file = entry.name;
+        if (const auto header
+            = fh1::rendermesh::readHeader(archive->readPrefix(entry, fh1::rendermesh::kHeaderBytes))) {
+            part = header->firstPartName;
+        }
+    }
+    QString kind = tr("World geometry, drawn where its file puts it");
+    if (chunk.backdrop) {
+        kind = tr("Backdrop terrain");
+    } else if (chunk.scattered) {
+        kind = tr("Copy placed by a procedural set (trees, bushes, fences)");
+    } else if (chunk.placed) {
+        kind = tr("Prop placed by a zone file");
+    }
+    const QVector3D size = chunk.boundsMax - chunk.boundsMin;
+    fh1::Properties rows{
+        {tr("Model"), part},
+        {tr("File"), file},
+        {tr("Kind"), kind},
+        {tr("Level of detail"), chunk.lod < 0 ? tr("none") : QString::number(static_cast<int>(chunk.lod))},
+        {tr("Drawn from"), tr("%1 to %2").arg(metres(chunk.bandStart), metres(chunk.bandEnd))},
+        {tr("Position"), point(chunk.placed ? chunk.placement.position : (chunk.boundsMin + chunk.boundsMax) / 2.0F)},
+        {tr("Size"), tr("%1 × %2 × %3 m").arg(size.x(), 0, 'f', 1).arg(size.y(), 0, 'f', 1).arg(size.z(), 0, 'f', 1)},
+        {tr("Triangles"), QLocale().toString(static_cast<qulonglong>(m_selectedModel->triangles))},
+        {tr("Clicked at"), point(m_selectedModel->point)},
+    };
+    if (chunk.placed && chunk.placement.eventProp) {
+        rows.append({tr("Shown"), tr("Only during races and events")});
+    }
+    m_properties->setRowCount(static_cast<int>(rows.size()));
+    for (int i = 0; i < rows.size(); ++i) {
+        auto* value = new QTableWidgetItem(rows.at(i).second);
+        value->setToolTip(rows.at(i).second);
+        m_properties->setItem(i, 0, new QTableWidgetItem(rows.at(i).first));
+        m_properties->setItem(i, 1, value);
     }
 }
 

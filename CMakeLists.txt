@@ -52,6 +52,8 @@ add_library(fh1core STATIC
     src/core/TrackTextures.h
     src/core/WorldIndex.cpp
     src/core/WorldIndex.h
+    src/core/WorldPicking.cpp
+    src/core/WorldPicking.h
     src/core/WorldTiles.cpp
     src/core/WorldTiles.h
     src/core/XboxTexture.cpp

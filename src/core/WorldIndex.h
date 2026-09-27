@@ -48,6 +48,9 @@ struct WorldChunk {
     /// as stored.
     bool placed = false;
     Placement placement;
+    /// A placed copy from a procedural set (see ScatterSet) rather than a
+    /// zone file's placement.
+    bool scattered = false;
 
     /// Whether the chunk is drawn while the camera is in `zone`; -1 (outside
     /// every zone, or no zone data) draws it.
