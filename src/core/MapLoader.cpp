@@ -329,12 +329,20 @@ void loadRaces(const Context& ctx, const QHash<int, std::vector<QVector3D>>& rac
         race.length = row.length;
         race.prize = row.prize;
         race.route = routeIndex.value(row.routeId, -1);
+        race.eventRow = row.eventRow;
+        race.raceRow = row.raceRow;
+        race.opponents = row.opponents;
+        race.timeOfDay = row.timeOfDay;
+        race.carClassId = row.carClassId;
         if (race.route < 0) {
             ctx.warn(QStringLiteral("race %1 runs on route %2, which has no TrackRoute file")
                     .arg(race.eventId)
                     .arg(race.routeId));
         }
         map.races.push_back(std::move(race));
+    }
+    for (const GameDatabase::CarClass& carClass : ctx.database().carClasses()) {
+        map.carClasses.push_back({carClass.id, text(QStringLiteral("CarClasses.str"), carClass.name, {})});
     }
 }
 

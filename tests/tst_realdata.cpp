@@ -2,7 +2,9 @@
 // disc folder (holding media) to run these; they are skipped otherwise.
 
 #include "ForzaZip.h"
+#include "GameDatabase.h"
 #include "GameInstall.h"
+#include "GameObjects.h"
 #include "Loaders.h"
 #include "MapLoader.h"
 #include "Races.h"
@@ -19,6 +21,7 @@
 #include <QDir>
 #include <QFile>
 #include <QSet>
+#include <QTemporaryDir>
 #include <QVector2D>
 
 #include <algorithm>
@@ -266,6 +269,95 @@ private slots:
                 QCOMPARE(reread.transforms[i].attributes, route.transforms[i].attributes);
             }
         }
+    }
+
+    void gameObjectsAndRaceSettingsSave()
+    {
+        fh1::GameInstall install;
+        QVERIFY(install.open(gameDir()));
+        const fh1::MapData map = fh1::MapLoader::load(install, QStringLiteral("colorado"));
+        // The objects kept for editing line up with the map's markers.
+        QCOMPARE(map.gameObjects.objects.size(), std::size_t{2148});
+        QCOMPARE(map.gameObjects.mediaPath, QStringLiteral("tracks/colorado/Ribbon_00/GameObjs.xml"));
+        QFile file(QDir(install.mediaPath()).filePath(map.gameObjects.mediaPath));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QByteArray original = file.readAll();
+        QVERIFY(fh1::writeGameObjects(map.gameObjects) == original);
+
+        // Every object written anew reads back the same, and the file comes
+        // out byte for byte: the number format loses nothing.
+        fh1::GameObjectsFile rewritten = map.gameObjects;
+        for (fh1::GameObject& object : rewritten.objects) {
+            object.edited = true;
+        }
+        QVERIFY(fh1::writeGameObjects(rewritten) == original);
+
+        // Removing one keeps the others and their numbering unbroken.
+        fh1::GameObjectsFile removed = map.gameObjects;
+        fh1::removeGameObject(removed, 0);
+        const fh1::GameObjectsFile reread = fh1::readGameObjects(fh1::writeGameObjects(removed), {});
+        QCOMPARE(reread.objects.size(), std::size_t{2147});
+        for (std::size_t i = 0; i < reread.objects.size(); ++i) {
+            QCOMPARE(reread.objects[i].element, QStringLiteral("Obj%1").arg(i));
+            QCOMPARE(reread.objects[i].gameplayId, map.gameObjects.objects[i + 1].gameplayId);
+        }
+
+        // Race settings go to a copy of the database; only the edited race
+        // changes, and the game's file is left alone.
+        QVERIFY(map.carClasses.size() == 11);
+        std::vector<fh1::Race> races = map.races;
+        const auto rush
+            = std::find_if(races.begin(), races.end(), [](const fh1::Race& r) { return r.eventId == "FR02"; });
+        QVERIFY(rush != races.end());
+        QCOMPARE(rush->opponents, 7);
+        QCOMPARE(rush->timeOfDay, 33420);
+        rush->laps = 4;
+        rush->prize = 12345;
+        rush->timeOfDay = 3600;
+        QString error;
+        const QString database = install.resolve(QStringLiteral("db/gamedb.slt"));
+        const std::optional<QByteArray> edited = fh1::writeRaceSettings(database, races, map.races, {}, &error);
+        QVERIFY2(edited.has_value(), qPrintable(error));
+        QTemporaryDir dir;
+        QFile copy(dir.filePath(QStringLiteral("gamedb.slt")));
+        QVERIFY(copy.open(QIODevice::WriteOnly) && copy.write(*edited) == edited->size());
+        copy.close();
+        fh1::GameDatabase reopened;
+        QVERIFY(reopened.open(copy.fileName()));
+        std::size_t changed = 0;
+        const std::vector<fh1::GameDatabase::RaceRow> rows = reopened.races(QStringLiteral("colorado"));
+        QCOMPARE(rows.size(), map.races.size());
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const bool same = rows[i].laps == map.races[i].laps && rows[i].prize == map.races[i].prize
+                && rows[i].timeOfDay == map.races[i].timeOfDay;
+            changed += same ? 0 : 1;
+            if (rows[i].eventId == QLatin1String("FR02")) {
+                QCOMPARE(rows[i].laps, 4);
+                QCOMPARE(rows[i].prize, 12345);
+                QCOMPARE(rows[i].timeOfDay, 3600);
+                QCOMPARE(rows[i].opponents, 7);
+            }
+        }
+        QCOMPARE(changed, std::size_t{1});
+        // Deleting an event takes every row that refers to it.
+        const auto blitz
+            = std::find_if(map.races.begin(), map.races.end(), [](const fh1::Race& r) { return r.eventId == "FR05"; });
+        QVERIFY(blitz != map.races.end());
+        fh1::GameDatabase game;
+        QVERIFY(game.open(database));
+        QVERIFY(!game.eventReferences(blitz->eventRow).empty());
+        std::vector<fh1::Race> remaining = map.races;
+        remaining.erase(remaining.begin() + (blitz - map.races.begin()));
+        std::vector<fh1::Race> loaded = remaining;
+        const std::optional<QByteArray> deleted = fh1::writeRaceSettings(database, remaining, loaded, {*blitz}, &error);
+        QVERIFY2(deleted.has_value(), qPrintable(error));
+        QFile without(dir.filePath(QStringLiteral("without.slt")));
+        QVERIFY(without.open(QIODevice::WriteOnly) && without.write(*deleted) == deleted->size());
+        without.close();
+        fh1::GameDatabase pruned;
+        QVERIFY(pruned.open(without.fileName()));
+        QCOMPARE(pruned.races(QStringLiteral("colorado")).size(), map.races.size() - 1);
+        QVERIFY(pruned.eventReferences(blitz->eventRow).empty());
     }
 
     void propPlacements()

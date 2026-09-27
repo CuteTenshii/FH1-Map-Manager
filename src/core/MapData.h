@@ -129,6 +129,22 @@ struct Race {
     int routeId = -1;
     /// Index into MapData::raceRoutes, or -1 when the route file is missing.
     int route = -1;
+    /// Its Events and Races rows in gamedb, which edits are written to.
+    int eventRow = -1;
+    int raceRow = -1;
+    /// AI cars racing the player.
+    int opponents = 0;
+    /// When the race starts, in seconds after midnight.
+    int timeOfDay = 0;
+    /// The car class the race is for: a CarClasses.Id (see MapData::carClasses).
+    int carClassId = -1;
+};
+
+/// A car class a race can be for.
+struct CarClass {
+    int id = -1;
+    /// "D", "S", "R1"…
+    QString name;
 };
 
 /// Everything the viewer shows for one track.
@@ -144,6 +160,8 @@ struct MapData {
     std::vector<Race> races;
     /// The routes the races run on.
     std::vector<RaceRoute> raceRoutes;
+    /// Every car class, by id.
+    std::vector<CarClass> carClasses;
     /// Ribbon_00/GameObjs.xml, whose objects are the "gameobjs" layer's
     /// features in the same order; empty when the track has none or they
     /// do not match up.

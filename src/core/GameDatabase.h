@@ -1,9 +1,13 @@
 #pragma once
 
+#include "MapData.h"
+
+#include <QByteArray>
 #include <QHash>
 #include <QString>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace fh1 {
@@ -40,6 +44,21 @@ public:
         int laps = 1;
         int length = 0;
         int prize = 0;
+        /// Events.Id and Races.Id, which edits are written back to.
+        int eventRow = -1;
+        int raceRow = -1;
+        /// Events.NumberOfDrivers: the AI cars racing the player.
+        int opponents = 0;
+        /// Events.TimeOfDayStart, in seconds after midnight.
+        int timeOfDay = 0;
+        /// Events.TargetClass, a CarClasses.Id.
+        int carClassId = -1;
+    };
+    /// A car class: CarClasses.Id and its DisplayName reference
+    /// (CarClasses.str).
+    struct CarClass {
+        int id = -1;
+        QString name;
     };
     /// A car's naming parts; the game shows "<year> <make> <model>".
     struct Car {
@@ -66,6 +85,11 @@ public:
     /// The race events run on the track whose MediaName is `mediaName`, in
     /// event order; the free-roam session (CareerEventStyle 0) is left out.
     std::vector<RaceRow> races(const QString& mediaName);
+    /// Every car class, by id.
+    std::vector<CarClass> carClasses();
+    /// Rows of other tables that refer to event `eventRow` (an Events.Id),
+    /// by table, for the tables that have any (see eventReferenceColumns()).
+    std::vector<std::pair<QString, int>> eventReferences(int eventRow);
     /// Naming parts of a Data_Car row, or nothing if the id is unknown.
     std::optional<Car> car(const QString& carId);
 
@@ -74,5 +98,21 @@ private:
     bool m_open = false;
     QString m_error;
 };
+
+/// The tables and columns of gamedb.slt that refer to an event by its
+/// Events.Id: its race, AI participants, recommended cars, restrictions,
+/// showroom challenges, colours, music, prizes, unlocks, hub and saved
+/// progress.
+const std::vector<std::pair<QString, QString>>& eventReferenceColumns();
+
+/// The database file at `path` with the settings of `races` (laps,
+/// opponents, prize, car class, start time) written into their Events and
+/// Races rows, for each race that differs from the same race in `original`,
+/// and with the events of `deleted` removed along with every row that
+/// refers to them (see eventReferenceColumns()); the file itself is left
+/// as it is. Returns nothing, with `error` set, if the copy cannot be made
+/// or updated.
+std::optional<QByteArray> writeRaceSettings(const QString& path, const std::vector<Race>& races,
+    const std::vector<Race>& original, const std::vector<Race>& deleted, QString* error);
 
 } // namespace fh1
