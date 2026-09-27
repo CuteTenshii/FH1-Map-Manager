@@ -2378,6 +2378,7 @@ bool MainWindow::openGameFolder(const QString& path, const QString& track)
     m_install = install;
     m_installOpen = true;
     settings.setValue(QStringLiteral("gameFolder"), path);
+    updateWindowTitle();
     m_trackCombo->clear();
     m_trackCombo->addItems(tracks);
     m_trackCombo->setCurrentText(chosen);
@@ -3119,7 +3120,19 @@ void MainWindow::setLoading(bool loading)
 
 void MainWindow::updateWindowTitle()
 {
-    setWindowTitle(m_trackName.isEmpty() ? tr("FH1 Map Viewer[*]") : tr("%1[*] — FH1 Map Viewer").arg(m_trackName));
+    if (!m_installOpen) {
+        setWindowTitle(tr("FH1 Map Viewer[*]"));
+        return;
+    }
+    // The viewer reopens the last game folder on its own, and edits saved
+    // over that folder's files are backed up while those saved elsewhere
+    // are not, so which folder is open has to stay in sight.
+    const QFileInfo media(m_install.mediaPath());
+    const QString folder = QDir::toNativeSeparators(
+        media.fileName().compare(QLatin1String("media"), Qt::CaseInsensitive) == 0 ? media.absolutePath()
+                                                                                   : media.absoluteFilePath());
+    setWindowTitle(m_trackName.isEmpty() ? tr("%1[*] - FH1 Map Viewer").arg(folder)
+                                         : tr("%1[*] - %2 - FH1 Map Viewer").arg(m_trackName, folder));
 }
 
 void MainWindow::runScript()

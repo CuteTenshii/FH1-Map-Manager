@@ -563,6 +563,8 @@ private slots:
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         QVERIFY(window.openGameFolder(disc));
+        // The folder is named as soon as it is open, before its track loads.
+        QVERIFY(window.windowTitle().startsWith(QDir::toNativeSeparators(disc)));
         auto* view = window.findChild<MapView*>();
         QVERIFY(view != nullptr);
         std::map<QString, QAction*> actions;
@@ -570,6 +572,9 @@ private slots:
             actions[action->text().remove(QLatin1Char('&'))] = action;
         }
         QTRY_VERIFY(actions[QStringLiteral("Edit on Map")]->isEnabled());
+        // The title names the open game folder, not its media folder.
+        QCOMPARE(window.windowTitle(),
+            QStringLiteral("testbed[*] - %1 - FH1 Map Viewer").arg(QDir::toNativeSeparators(disc)));
         actions[QStringLiteral("Edit on Map")]->setChecked(true);
         const QPoint flyer = view->mapFromScene(QPointF(-50.0, 0.0));
         QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, flyer);
