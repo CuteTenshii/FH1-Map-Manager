@@ -66,6 +66,12 @@ std::optional<float> roadHeightNear(const MapData& map, float x, float z, float 
 /// otherwise below the folder itself (a copy of `media`).
 QString routeOutputPath(const QString& outputFolder, const QString& mediaPath);
 
+/// Gets `path` ready to be written: creates its folder and, when `path` is
+/// the game's own file, `originalPath`, copies the original to `backupPath`
+/// unless a backup is already there. Returns false, with `error` set, if
+/// that fails.
+bool prepareEditedFile(const QString& path, const QString& originalPath, const QString& backupPath, QString* error);
+
 /// Writes `contents` to `path`. When `path` is the game's own file,
 /// `originalPath`, the original is first copied to `backupPath`, unless a
 /// backup is already there; keeping backups out of the game folder leaves

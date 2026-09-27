@@ -376,8 +376,7 @@ QString routeOutputPath(const QString& outputFolder, const QString& mediaPath)
     return QDir::cleanPath(folder.filePath(mediaPath));
 }
 
-bool saveEditedFile(const QByteArray& contents, const QString& path, const QString& originalPath,
-    const QString& backupPath, QString* error)
+bool prepareEditedFile(const QString& path, const QString& originalPath, const QString& backupPath, QString* error)
 {
     const auto fail = [error](const QString& message) {
         if (error != nullptr) {
@@ -396,12 +395,21 @@ bool saveEditedFile(const QByteArray& contents, const QString& path, const QStri
             return fail(QStringLiteral("cannot back up %1 to %2").arg(path, backupPath));
         }
     }
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        return fail(QStringLiteral("cannot write %1: %2").arg(path, file.errorString()));
+    return true;
+}
+
+bool saveEditedFile(const QByteArray& contents, const QString& path, const QString& originalPath,
+    const QString& backupPath, QString* error)
+{
+    if (!prepareEditedFile(path, originalPath, backupPath, error)) {
+        return false;
     }
-    if (file.write(contents) != contents.size() || !file.commit()) {
-        return fail(QStringLiteral("cannot write %1: %2").arg(path, file.errorString()));
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(contents) != contents.size() || !file.commit()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("cannot write %1: %2").arg(path, file.errorString());
+        }
+        return false;
     }
     return true;
 }

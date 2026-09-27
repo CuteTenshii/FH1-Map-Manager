@@ -63,6 +63,12 @@ void EditSession::addFile(const QString& key, const QString& label, const QStrin
     }
 }
 
+void EditSession::addLargeFile(const QString& key, const QString& label, const QString& mediaPath, Writer writer)
+{
+    addFile(key, label, mediaPath, {});
+    m_files[key].writer = std::move(writer);
+}
+
 void EditSession::push(const QString& key, QUndoCommand* command)
 {
     const auto it = m_files.find(key);
@@ -174,11 +180,24 @@ bool EditSession::save(const QString& key)
         return false;
     }
     QString error;
-    const std::optional<QByteArray> contents = it->contents(&error);
     const QString path = fh1::routeOutputPath(outputFolder(), it->mediaPath);
-    if (!contents
-        || !fh1::saveEditedFile(*contents, path, QDir(m_gameMediaPath).filePath(it->mediaPath),
-            QDir(backupFolder()).filePath(it->mediaPath), &error)) {
+    const QString original = QDir(m_gameMediaPath).filePath(it->mediaPath);
+    const QString backup = QDir(backupFolder()).filePath(it->mediaPath);
+    bool written = false;
+    if (it->writer) {
+        // Large files take seconds: the backup of the original and the copy
+        // of everything that did not change.
+        const Job job = it->writer();
+        written = runWithProgress<bool>(
+            m_window, tr("Saving %1…").arg(QFileInfo(it->mediaPath).fileName()), [&](const ProgressReport& progress) {
+                progress(0, 0);
+                return fh1::prepareEditedFile(path, original, backup, &error) && job(path, &error, progress);
+            });
+    } else {
+        const std::optional<QByteArray> contents = it->contents(&error);
+        written = contents && fh1::saveEditedFile(*contents, path, original, backup, &error);
+    }
+    if (!written) {
         QMessageBox::warning(m_window, tr("Could not save %1").arg(QFileInfo(it->mediaPath).fileName()), error);
         return false;
     }

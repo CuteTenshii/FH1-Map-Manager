@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ProgressTask.h"
+
 #include <QByteArray>
 #include <QHash>
 #include <QObject>
@@ -25,6 +27,13 @@ class EditSession : public QObject {
 public:
     /// Gives a file's contents for saving, or nothing with `error` set.
     using Contents = std::function<std::optional<QByteArray>(QString* error)>;
+    /// Writes a file too large to hold in memory to `path`, on a worker
+    /// thread, telling `progress` how far it has got. Returns false, with
+    /// `error` set, if it cannot.
+    using Job = std::function<bool(const QString& path, QString* error, const ProgressReport& progress)>;
+    /// Called on the main thread when a large file is saved: gives the job
+    /// that writes the file as it is at that moment.
+    using Writer = std::function<Job()>;
 
     /// Dialogs open over `window`.
     explicit EditSession(QWidget* window);
@@ -39,6 +48,11 @@ public:
     /// named `label` in the edit history, whose contents `contents` gives.
     /// Registering it again keeps its history.
     void addFile(const QString& key, const QString& label, const QString& mediaPath, Contents contents);
+    /// Registers file `key` as addFile() does, for a file that the job from
+    /// `writer` writes straight to disk, such as a track's bin.zip. Saving
+    /// it, and backing up the original, runs on a worker thread behind a
+    /// progress dialog.
+    void addLargeFile(const QString& key, const QString& label, const QString& mediaPath, Writer writer);
     /// Adds `command` to the history of file `key` and makes it the one
     /// Undo and Redo act on.
     void push(const QString& key, QUndoCommand* command);
@@ -88,6 +102,7 @@ private:
         QString label;
         QString mediaPath;
         Contents contents;
+        Writer writer;
         QUndoStack* stack = nullptr;
     };
 

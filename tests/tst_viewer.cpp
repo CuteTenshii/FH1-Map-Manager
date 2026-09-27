@@ -6,6 +6,7 @@
 #include "Loaders.h"
 #include "MainWindow.h"
 #include "MapView.h"
+#include "ProgressTask.h"
 #include "RaceTableModel.h"
 #include "RouteEditing.h"
 #include "XmlElements.h"
@@ -32,6 +33,7 @@
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 #include <QTimer>
 #include <QTreeWidget>
 
@@ -646,6 +648,26 @@ private slots:
         QCOMPARE(saved.transforms.size(), std::size_t{2});
         QVERIFY(!fh1::routeTransformIndex(saved, QStringLiteral("start_location_00")).has_value());
         QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void workRunsBehindAProgressDialog()
+    {
+        QWidget window;
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const Qt::HANDLE mainThread = QThread::currentThreadId();
+        Qt::HANDLE workThread = nullptr;
+        const int result
+            = runWithProgress<int>(&window, QStringLiteral("Working"), [&](const ProgressReport& progress) {
+                  workThread = QThread::currentThreadId();
+                  for (qint64 done = 0; done <= 1000; ++done) {
+                      progress(done, 1000);
+                  }
+                  progress(0, 0);
+                  return 42;
+              });
+        QCOMPARE(result, 42);
+        QVERIFY(workThread != mainThread);
     }
 
     void pointBoundsCoverEveryPoint()
