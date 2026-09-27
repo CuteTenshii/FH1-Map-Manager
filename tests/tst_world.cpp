@@ -943,6 +943,42 @@ private slots:
         }
     }
 
+    void placesPropsWithDistantPivots()
+    {
+        // A gondola cabin modelled 200 m from its pivot, which its draw
+        // moves to 3000, 150, 3400, and ground whose draw leaves it where
+        // its file puts it.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QByteArray cabin = renderModel({quad(QStringLiteral("Gondola_LOD00_001"), 200, 200, 30, 2)});
+        const QByteArray ground = renderModel({quad(QStringLiteral("Terrain_LOD00_01"), 600, 600, 0, 100)});
+        const TestPlacement moved{0, QVector3D(3000, 150, 3400), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {500, 501, 502}};
+        const TestPlacement asStored{1, QVector3D(0, 0, 0), {1, 0, 0, 0, 1, 0, 0, 0, -1}, {400, 650, -1}};
+        const QString archivePath = writeZip(dir,
+            {{QStringLiteral("coloradoout.00000.rmb.bin"), cabin},
+                {QStringLiteral("coloradoout.00001.rmb.bin"), ground},
+                {QStringLiteral("__R00Z00000.pvsz"), zoneFile({moved, asStored})}});
+        fh1::ForzaZip archive;
+        QVERIFY2(archive.open(archivePath), qPrintable(archive.errorString()));
+        QString error;
+        const std::optional<fh1::TrackPlacements> placements
+            = fh1::TrackPlacements::load(pvsFile({0x10}, {{}, {}}, {0, 1}), archive, nullptr, &error);
+        QVERIFY2(placements.has_value(), qPrintable(error));
+        const std::optional<fh1::WorldIndex> index = fh1::WorldIndex::build(archive, {}, nullptr, &*placements);
+        QVERIFY(index.has_value());
+        QCOMPARE(index->chunks().size(), std::size_t{2});
+        QCOMPARE(index->placedCount(), 1);
+        for (const fh1::WorldChunk& chunk : index->chunks()) {
+            const QVector3D centre = (chunk.boundsMin + chunk.boundsMax) / 2.0F;
+            if (chunk.placed) {
+                // The cabin, 200 m from the pivot its draw moved.
+                QVERIFY((centre - QVector3D(3200, 180, 3600)).length() < 1.0F);
+            } else {
+                QVERIFY((centre - QVector3D(600, 0, 600)).length() < 1.0F);
+            }
+        }
+    }
+
     void placesPropsFromZones()
     {
         QTemporaryDir dir;

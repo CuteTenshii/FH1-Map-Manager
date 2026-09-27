@@ -261,6 +261,15 @@ private slots:
         QVERIFY(index.has_value());
         // Zone placements and every level of every procedural copy.
         QVERIFY2(index->placedCount() > 250000, qPrintable(QString::number(index->placedCount())));
+        // The dam's main wall is modelled around a pivot its draw moves to
+        // 6719.6, 172.7, -390.5; its centre lies 5, -10 and 22 m from it.
+        const bool damPlaced
+            = std::any_of(index->chunks().begin(), index->chunks().end(), [](const fh1::WorldChunk& c) {
+                  const QVector3D centre = (c.boundsMin + c.boundsMax) / 2.0F;
+                  return c.placed && c.boundsMax.x() - c.boundsMin.x() > 200.0F
+                      && (centre - QVector3D(6724.6F, 162.7F, -368.5F)).length() < 30.0F;
+              });
+        QVERIFY(damPlaced);
         int backdrop = 0;
         for (const fh1::WorldChunk& chunk : index->chunks()) {
             if (chunk.backdrop) {

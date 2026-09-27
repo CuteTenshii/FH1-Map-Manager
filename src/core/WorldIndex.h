@@ -59,9 +59,11 @@ struct WorldChunk {
 
 /// The render models of a track, found by reading only the header of every
 /// `*.rmb.bin` in its archive. Duplicate copies of a model are indexed once.
-/// Models centred on the origin are props in their own local space: each of
-/// their placements (see TrackPlacements) becomes a chunk of its own, and
-/// those never placed are only counted. Boundary shells and shadow-casting
+/// Models centred on the origin are props in their own local space, and so
+/// are models whose draw records move them away from where their file puts
+/// them (props modelled around a distant pivot): each of their placements
+/// (see TrackPlacements) becomes a chunk of its own, and those never placed
+/// are only counted. Boundary shells and shadow-casting
 /// stand-ins are left out. With the track's zone grid, backdrop chunks carry
 /// the zones they are drawn from, and backdrop levels no zone lists (which
 /// the game never draws) are left out.

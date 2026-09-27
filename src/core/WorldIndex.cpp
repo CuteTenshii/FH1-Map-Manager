@@ -14,6 +14,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -23,9 +24,29 @@ namespace fh1 {
 namespace {
 
 constexpr quint32 kCacheMagic = 0x46483157; // "FH1W"
-constexpr quint32 kCacheVersion = 10;
+constexpr quint32 kCacheVersion = 11;
 /// Models whose centre lies this close to the origin are in local space.
 constexpr float kLocalSpaceRadius = 5.0F;
+/// How far a transform may be from the world-space one (no move, Z mirrored)
+/// and still count as it.
+constexpr float kWorldTransformTolerance = 0.01F;
+
+/// Whether a draw's placement leaves its model where the model file puts it:
+/// at the origin, not turned, with the file's Z mirrored as every
+/// world-space model is.
+bool isWorldSpaceTransform(const Placement& placement)
+{
+    constexpr std::array<float, 9> kWorldRows{1, 0, 0, 0, 1, 0, 0, 0, -1};
+    if (placement.position.length() > kWorldTransformTolerance) {
+        return false;
+    }
+    for (std::size_t k = 0; k < kWorldRows.size(); ++k) {
+        if (std::abs(placement.rows[k] - kWorldRows[k]) > kWorldTransformTolerance) {
+            return false;
+        }
+    }
+    return true;
+}
 /// Meshes without LOD levels are drawn up to this distance, or further for
 /// big ones (terrain cubes), so small detail such as cables fades out.
 constexpr float kNoLodMinRange = 1000.0F;
@@ -101,6 +122,19 @@ std::optional<WorldIndex> WorldIndex::build(const ForzaZip& archive, const Progr
     };
     // Props by render object number, placed once every header is read.
     QHash<std::uint32_t, LocalModel> localModels;
+    // Some props are modelled around a pivot far from their centre (the
+    // dam's buildings, gondolas, mining towers) and look like world-space
+    // models; their draw records move them, which world-space models' never
+    // do.
+    QSet<std::uint32_t> movedObjects;
+    if (placements != nullptr) {
+        for (std::size_t d = 0; d < placements->drawCount(); ++d) {
+            const Placement* placement = placements->placement(d);
+            if (placement != nullptr && !placements->isScatterTemplate(d) && !isWorldSpaceTransform(*placement)) {
+                movedObjects.insert(placements->drawObject(d));
+            }
+        }
+    }
     // bin.zip stores most models several times under the same name, with
     // identical contents (same CRC) at different offsets; one copy is enough.
     QSet<QString> seen;
@@ -128,8 +162,9 @@ std::optional<WorldIndex> WorldIndex::build(const ForzaZip& archive, const Progr
             continue;
         }
         const QVector3D centre = (header->boundsMin + header->boundsMax) / 2.0F;
-        if (std::hypot(centre.x(), centre.z()) < kLocalSpaceRadius) {
-            if (const std::optional<std::uint32_t> object = TrackTextures::objectNumber(entry.name)) {
+        const std::optional<std::uint32_t> object = TrackTextures::objectNumber(entry.name);
+        if (std::hypot(centre.x(), centre.z()) < kLocalSpaceRadius || (object && movedObjects.contains(*object))) {
+            if (object) {
                 localModels.insert(*object, LocalModel{static_cast<std::uint32_t>(i), *header});
             } else {
                 ++index.m_localModels;
