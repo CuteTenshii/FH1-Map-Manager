@@ -1,6 +1,7 @@
 #include "RaceTableModel.h"
 
 #include <QColor>
+#include <QFont>
 #include <QLocale>
 
 RaceTableModel::RaceTableModel(QObject* parent)
@@ -13,6 +14,21 @@ void RaceTableModel::setMap(const fh1::MapData* map)
     beginResetModel();
     m_map = map;
     endResetModel();
+}
+
+void RaceTableModel::setModifiedRaces(const QSet<int>& races)
+{
+    if (races != m_modifiedRaces) {
+        m_modifiedRaces = races;
+        refresh();
+    }
+}
+
+void RaceTableModel::refresh()
+{
+    if (rowCount() > 0) {
+        emit dataChanged(index(0, 0), index(rowCount() - 1, ColumnCount - 1));
+    }
 }
 
 int RaceTableModel::rowCount(const QModelIndex& parent) const
@@ -38,6 +54,15 @@ QVariant RaceTableModel::data(const QModelIndex& index, int role) const
     if (race.route < 0 && role == Qt::ForegroundRole) {
         return QColor(Qt::gray);
     }
+    const bool modified = m_modifiedRaces.contains(index.row());
+    if (modified && role == Qt::FontRole) {
+        QFont font;
+        font.setItalic(true);
+        return font;
+    }
+    if (modified && role == Qt::ToolTipRole) {
+        return tr("Its route or settings have edits that are not saved yet");
+    }
     if (race.route < 0 && role == Qt::ToolTipRole) {
         return tr("This install has no route file for route %1, so the race cannot be shown").arg(race.routeId);
     }
@@ -48,7 +73,7 @@ QVariant RaceTableModel::data(const QModelIndex& index, int role) const
     const QLocale locale;
     switch (index.column()) {
     case Name:
-        return race.name;
+        return display && modified ? tr("%1 *").arg(race.name) : race.name;
     case Type:
         return race.type;
     case Route:

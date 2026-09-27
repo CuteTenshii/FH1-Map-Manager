@@ -3,6 +3,7 @@
 #include "MapData.h"
 
 #include <QAbstractTableModel>
+#include <QSet>
 
 /// The race events of a MapData, one row per race. Qt::DisplayRole gives
 /// formatted text; Qt::EditRole gives raw values (numbers for laps, length
@@ -17,6 +18,11 @@ public:
 
     /// `map` must outlive the model or be replaced by another call.
     void setMap(const fh1::MapData* map);
+    /// These races (indices into MapData::races) are shown as having
+    /// unsaved edits.
+    void setModifiedRaces(const QSet<int>& races);
+    /// Shows the races' values anew after they were edited.
+    void refresh();
 
     int rowCount(const QModelIndex& parent = {}) const override;
     int columnCount(const QModelIndex& parent = {}) const override;
@@ -25,4 +31,5 @@ public:
 
 private:
     const fh1::MapData* m_map = nullptr;
+    QSet<int> m_modifiedRaces;
 };

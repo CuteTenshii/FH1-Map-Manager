@@ -1,7 +1,10 @@
 #include "MainWindow.h"
 
 #include "BackgroundItem.h"
+#include "EditHistoryPanel.h"
+#include "EditSession.h"
 #include "FeatureTableModel.h"
+#include "GameDatabase.h"
 #include "LayerItem.h"
 #include "Loaders.h"
 #include "MapLoader.h"
@@ -9,26 +12,32 @@
 #include "RaceTableModel.h"
 #include "Races.h"
 #include "RenderMesh.h"
+#include "RouteEditing.h"
 #include "WorldDebugPanel.h"
 #include "WorldView3D.h"
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QGraphicsScene>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMap>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -38,16 +47,20 @@
 #include <QSet>
 #include <QSettings>
 #include <QSortFilterProxyModel>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTableView>
 #include <QTableWidget>
+#include <QTimeEdit>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QUndoCommand>
+#include <QUndoGroup>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -55,6 +68,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <limits>
 #include <numbers>
 
 namespace {
@@ -70,6 +85,8 @@ QString worldCacheDirectory()
 
 constexpr int kLayerRole = Qt::UserRole;
 constexpr int kGroupRole = Qt::UserRole + 1;
+/// On Properties rows naming a related gameplay object: its index.
+constexpr int kRelatedObjectRole = Qt::UserRole + 2;
 constexpr int kBackgroundLayer = -1;
 
 /// Click tolerance around the cursor, in device pixels; about half the size of
@@ -84,6 +101,12 @@ constexpr double kRaceMarkerRadius = 5.0;
 /// The race route is drawn wider than the map's lines, to stand out from
 /// the AI routes and roads under it.
 constexpr double kRaceLineWidthScale = 2.0;
+/// A road node this close to a moved route point gives its height when the
+/// 3D world is not loaded.
+constexpr float kRoadSnapRadius = 40.0F;
+/// Gameplay objects further apart than this are not one group, whatever
+/// their names say.
+constexpr float kGroupRadius = 500.0F;
 /// Race overlay items are drawn above every map layer.
 constexpr double kRaceOverlayZ = 10000.0;
 
@@ -115,6 +138,56 @@ QIcon swatch(const QColor& color)
     painter.drawEllipse(QRectF(1.5, 1.5, 11.0, 11.0));
     return QIcon(pixmap);
 }
+
+/// Keys of the edited files in the EditSession.
+constexpr QLatin1StringView kGameObjectsFile("gameobjs");
+constexpr QLatin1StringView kDatabaseFile("gamedb");
+
+QString routeFileKey(int route)
+{
+    return QStringLiteral("route:%1").arg(route);
+}
+
+/// Limits of the race settings dialog; the game's own races have up to 5
+/// laps and prizes up to 5,000,000 CR.
+constexpr int kMaxLaps = 50;
+constexpr int kMaxPrize = 99'999'999;
+constexpr int kPrizeStep = 500;
+/// Gameplay objects named in the delete event dialog before "…".
+constexpr std::size_t kListedNames = 6;
+/// Opponents allowed when the route's grid is unknown: the game's grids
+/// have eight places.
+constexpr int kDefaultMaxOpponents = 7;
+
+/// An edit kept as the state before and after it. The edit is already made
+/// when the command is pushed, so its first redo does nothing; later ones,
+/// and undo, put a state back through `apply`.
+template <typename State> class StateCommand : public QUndoCommand {
+public:
+    StateCommand(State before, State after, std::function<void(const State&)> apply, const QString& text)
+        : QUndoCommand(text)
+        , m_before(std::move(before))
+        , m_after(std::move(after))
+        , m_apply(std::move(apply))
+    {
+    }
+
+    void undo() override { m_apply(m_before); }
+
+    void redo() override
+    {
+        if (m_pushed) {
+            m_apply(m_after);
+        }
+        m_pushed = true;
+    }
+
+private:
+    State m_before;
+    State m_after;
+    std::function<void(const State&)> m_apply;
+    bool m_pushed = false;
+};
 
 /// Settings values of MainWindow::EventProps, in its order.
 const std::array<QLatin1StringView, 3> kEventPropsSettings{
@@ -181,9 +254,16 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_world3D, &WorldView3D::modelClicked, this, &MainWindow::selectModel);
     connect(m_world3D, &WorldView3D::emptyClicked, this, &MainWindow::clearSelection);
 
+    m_edits = new EditSession(this);
     createActions();
     createDocks();
     createStatusBar();
+    connect(m_edits, &EditSession::modifiedChanged, this, &MainWindow::onEditsChanged);
+    connect(m_edits, &EditSession::saved, this, [this](const QString& path) {
+        statusBar()->showMessage(tr("Saved %1").arg(QDir::toNativeSeparators(path)), 8000);
+    });
+    connect(m_view, &MapView::grabMoved, this, &MainWindow::onGrabMoved);
+    connect(m_view, &MapView::grabReleased, this, &MainWindow::onGrabReleased);
 
     QSettings eventPropsSettings;
     const QString savedEventProps = eventPropsSettings.value(QStringLiteral("view/eventProps")).toString();
@@ -205,6 +285,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     setLoading(false);
     updateWindowTitle();
+    updateEditActions();
 
     QSettings settings;
     if (!restoreGeometry(settings.value(QStringLiteral("window/geometry")).toByteArray())) {
@@ -216,6 +297,11 @@ MainWindow::MainWindow(QWidget* parent)
     if (!settings.value(QStringLiteral("window/stateHasWorldDebug"), false).toBool()) {
         tabifyDockWidget(m_objectsDock, m_debugDock);
         m_debugDock->hide();
+        m_objectsDock->raise();
+    }
+    if (!settings.value(QStringLiteral("window/stateHasEditHistory"), false).toBool()) {
+        tabifyDockWidget(m_objectsDock, m_historyDock);
+        m_historyDock->show();
         m_objectsDock->raise();
     }
     if (!settings.value(QStringLiteral("window/stateHasEvents"), false).toBool()) {
@@ -242,11 +328,53 @@ void MainWindow::createActions()
     m_exportAction = fileMenu->addAction(tr("&Export View as PNG…"), this, &MainWindow::exportView);
     m_exportAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     fileMenu->addSeparator();
+    m_saveEditsAction = fileMenu->addAction(tr("&Save Edits"), m_edits, &EditSession::saveAll);
+    m_saveEditsAction->setShortcut(QKeySequence::Save);
+    m_saveEditsAction->setToolTip(tr("Save every edited route, gameplay object and race setting"));
+    m_outputFolderAction = fileMenu->addAction(tr("&Where to Save Edits…"), this, [this] {
+        if (m_edits->chooseOutputFolder()) {
+            statusBar()->showMessage(
+                tr("Edits are saved under %1").arg(QDir::toNativeSeparators(m_edits->outputFolder())), 8000);
+        }
+    });
+    m_outputFolderAction->setToolTip(tr("Choose where edits are saved: the game folder or another"));
+    fileMenu->addSeparator();
     m_clearCacheAction = fileMenu->addAction(tr("Clear &Cache…"), this, &MainWindow::clearCache);
     m_clearCacheAction->setToolTip(tr("Delete the 3D world indexes this viewer keeps between sessions"));
     fileMenu->addSeparator();
     QAction* quitAction = fileMenu->addAction(tr("&Quit"), this, &QWidget::close);
     quitAction->setShortcut(QKeySequence::Quit);
+
+    QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
+    QAction* undoAction = m_edits->undoGroup()->createUndoAction(this, tr("&Undo"));
+    undoAction->setShortcut(QKeySequence::Undo);
+    editMenu->addAction(undoAction);
+    QAction* redoAction = m_edits->undoGroup()->createRedoAction(this, tr("&Redo"));
+    redoAction->setShortcut(QKeySequence::Redo);
+    editMenu->addAction(redoAction);
+    editMenu->addSeparator();
+    m_editMapAction = editMenu->addAction(tr("Edit on &Map"));
+    m_editMapAction->setCheckable(true);
+    m_editMapAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+    m_editMapAction->setToolTip(tr("Drag the selected race's route points and the gameplay objects on the map to "
+                                   "move them; Alt-drag turns them, and right-clicking adds or deletes"));
+    connect(m_editMapAction, &QAction::toggled, this, &MainWindow::setMapEditing);
+    editMenu->addSeparator();
+    m_deleteAction = editMenu->addAction(tr("&Delete"), this, [this] { deleteSelection(false); });
+    m_deleteAction->setShortcut(QKeySequence::Delete);
+    m_deleteAction->setToolTip(tr("Delete the selected race event or gameplay object, or the checkpoint or "
+                                  "waypoint clicked while editing on the map"));
+    m_deleteGroupAction
+        = editMenu->addAction(tr("Delete with Related &Objects"), this, [this] { deleteSelection(true); });
+    m_deleteGroupAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
+    m_deleteGroupAction->setToolTip(tr("Delete the selected gameplay object and the ones that belong with it"));
+    editMenu->addSeparator();
+    m_editRaceAction = editMenu->addAction(tr("Race &Settings…"), this, &MainWindow::editRaceSettings);
+    // Delete reaches this through deleteSelection(); two actions cannot share
+    // a key, so the menu only names it.
+    m_deleteEventAction = editMenu->addAction(tr("Delete Race &Event…\tDel"), this, &MainWindow::deleteRaceEvent);
+    m_deleteEventAction->setToolTip(tr("Delete the selected race event's gameplay objects and database rows"));
+    m_editRaceAction->setToolTip(tr("Change the selected race's laps, opponents, prize, car class and start time"));
 
     m_viewMenu = menuBar()->addMenu(tr("&View"));
     m_zoomInAction = m_viewMenu->addAction(tr("Zoom &In"), this, [this] { m_view->zoomBy(1.5); });
@@ -337,6 +465,8 @@ void MainWindow::createDocks()
     m_layerTree->setHeaderHidden(true);
     m_layerTree->setUniformRowHeights(true);
     connect(m_layerTree, &QTreeWidget::itemChanged, this, &MainWindow::onLayerTreeChanged);
+    m_layerTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_layerTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::onLayerTreeContextMenu);
     auto* layersDock = new QDockWidget(tr("Layers"), this);
     layersDock->setObjectName(QStringLiteral("layersDock"));
     layersDock->setWidget(m_layerTree);
@@ -380,6 +510,8 @@ void MainWindow::createDocks()
     connect(
         m_table->selectionModel(), &QItemSelectionModel::selectionChanged, this, &MainWindow::onTableSelectionChanged);
     connect(m_table, &QTableView::activated, this, &MainWindow::onTableActivated);
+    m_table->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_table, &QTableView::customContextMenuRequested, this, &MainWindow::onTableContextMenu);
 
     m_tableCount = new QLabel;
     auto* objectsPanel = new QWidget;
@@ -408,12 +540,29 @@ void MainWindow::createDocks()
     copyAction->setShortcutContext(Qt::WidgetShortcut);
     connect(copyAction, &QAction::triggered, this, &MainWindow::copyProperties);
     m_properties->addAction(copyAction);
+    auto* copyAllAction = new QAction(tr("Copy All"), m_properties);
+    connect(copyAllAction, &QAction::triggered, this, [this] {
+        m_properties->selectAll();
+        copyProperties();
+    });
+    m_properties->addAction(copyAllAction);
     m_properties->setContextMenuPolicy(Qt::ActionsContextMenu);
+    connect(m_properties, &QTableWidget::itemDoubleClicked, this, [this](QTableWidgetItem* item) {
+        const QVariant index = item->data(kRelatedObjectRole);
+        if (index.isValid() && gameObjectsLayer() >= 0) {
+            selectFeature(gameObjectsLayer(), index.toInt(), true);
+        }
+    });
     auto* propertiesDock = new QDockWidget(tr("Properties"), this);
     propertiesDock->setObjectName(QStringLiteral("propertiesDock"));
     propertiesDock->setWidget(m_properties);
     addDockWidget(Qt::RightDockWidgetArea, propertiesDock);
     splitDockWidget(m_objectsDock, propertiesDock, Qt::Vertical);
+
+    m_historyDock = new QDockWidget(tr("Edit History"), this);
+    m_historyDock->setObjectName(QStringLiteral("editHistoryDock"));
+    m_historyDock->setWidget(new EditHistoryPanel(m_edits));
+    addDockWidget(Qt::RightDockWidgetArea, m_historyDock);
 
     m_debugPanel = new WorldDebugPanel;
     m_debugDock = new QDockWidget(tr("World Debug"), this);
@@ -436,6 +585,7 @@ void MainWindow::createDocks()
     m_viewMenu->addAction(layersDock->toggleViewAction());
     m_viewMenu->addAction(m_objectsDock->toggleViewAction());
     m_viewMenu->addAction(m_eventsDock->toggleViewAction());
+    m_viewMenu->addAction(m_historyDock->toggleViewAction());
     m_viewMenu->addAction(propertiesDock->toggleViewAction());
     QAction* debugAction = m_debugDock->toggleViewAction();
     debugAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D));
@@ -485,6 +635,8 @@ void MainWindow::createEventsDock()
     m_raceTable->setColumnWidth(RaceTableModel::Prize, 90);
     connect(m_raceTable->selectionModel(), &QItemSelectionModel::selectionChanged, this,
         &MainWindow::onRaceSelectionChanged);
+    m_raceTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_raceTable, &QTableView::customContextMenuRequested, this, &MainWindow::onRaceTableContextMenu);
     connect(m_raceTable, &QTableView::activated, this, [this](const QModelIndex& index) {
         const int race = m_raceProxy->mapToSource(index).row();
         if (race == m_selectedRace) {
@@ -513,8 +665,14 @@ void MainWindow::createEventsDock()
     m_raceCount = new QLabel;
     m_selectedRaceLabel = new QLabel;
     m_selectedRaceLabel->setTextFormat(Qt::PlainText);
+    auto* editRouteButton = new QToolButton;
+    editRouteButton->setDefaultAction(m_editMapAction);
+    auto* raceSettingsButton = new QToolButton;
+    raceSettingsButton->setDefaultAction(m_editRaceAction);
     auto* selectedRow = new QHBoxLayout;
     selectedRow->addWidget(m_selectedRaceLabel, 1);
+    selectedRow->addWidget(editRouteButton);
+    selectedRow->addWidget(raceSettingsButton);
     selectedRow->addWidget(m_hideRaceButton);
     auto* panel = new QWidget;
     auto* layout = new QVBoxLayout(panel);
@@ -558,6 +716,7 @@ void MainWindow::selectRace(int race, bool focus)
         return;
     }
     removeRaceOverlay();
+    m_selectedRoutePoint.clear();
     m_selectedRace = race;
     m_hideRaceButton->setEnabled(true);
     const fh1::Race& selected = m_map->races[static_cast<std::size_t>(race)];
@@ -576,31 +735,13 @@ void MainWindow::selectRace(int race, bool focus)
     // Other props of the same event are shown in the 3D world even when the
     // install lacks the route file.
     applyEventPropFilter();
+    // Undo follows the route on screen, once it has been edited.
     if (selected.route >= 0) {
-        auto overlay = std::make_shared<fh1::MapData>();
-        overlay->trackName = m_map->trackName;
-        overlay->calibration = m_map->calibration;
-        overlay->layers = fh1::raceOverlay(selected, m_map->raceRoutes[static_cast<std::size_t>(selected.route)]);
-        m_raceOverlay = overlay;
-        for (std::size_t i = 0; i < overlay->layers.size(); ++i) {
-            const fh1::Layer& layer = overlay->layers[i];
-            // Past the map's layer indices, so the palette offsets differ;
-            // the race layers set their own colours anyway.
-            const int layerIndex = static_cast<int>(m_map->layers.size() + i);
-            LayerItem* item = nullptr;
-            if (layer.kind == fh1::FeatureKind::Point) {
-                item = new PointLayerItem(layer, m_map->calibration, layerIndex, kRaceMarkerRadius);
-            } else {
-                auto* shapes = new ShapeLayerItem(layer, m_map->calibration, layerIndex);
-                shapes->setLineWidthScale(kRaceLineWidthScale);
-                item = shapes;
-            }
-            item->setZValue(kRaceOverlayZ + static_cast<double>(i));
-            m_scene->addItem(item);
-            m_raceItems.push_back(item);
-        }
-        m_world3D->setOverlay(m_raceOverlay);
-        updateLabelSources();
+        m_edits->setActiveFile(routeFileKey(selected.route));
+    }
+    updateEditActions();
+    if (selected.route >= 0) {
+        showRaceOverlay();
     } else {
         statusBar()->showMessage(tr("%1 runs on route %2, which this install has no route file for")
                                      .arg(selected.name)
@@ -613,6 +754,890 @@ void MainWindow::selectRace(int race, bool focus)
     if (focus) {
         focusOnRace();
     }
+}
+
+void MainWindow::showRaceOverlay()
+{
+    removeRaceOverlay();
+    const int route = selectedRoute();
+    if (route < 0) {
+        return;
+    }
+    auto overlay = std::make_shared<fh1::MapData>();
+    overlay->trackName = m_map->trackName;
+    overlay->calibration = m_map->calibration;
+    overlay->layers = fh1::raceOverlay(
+        m_map->races[static_cast<std::size_t>(m_selectedRace)], m_map->raceRoutes[static_cast<std::size_t>(route)]);
+    m_raceOverlay = overlay;
+    for (std::size_t i = 0; i < overlay->layers.size(); ++i) {
+        const fh1::Layer& layer = overlay->layers[i];
+        // Past the map's layer indices, so the palette offsets differ; the
+        // race layers set their own colours anyway.
+        const int layerIndex = static_cast<int>(m_map->layers.size() + i);
+        LayerItem* item = nullptr;
+        if (layer.kind == fh1::FeatureKind::Point) {
+            item = new PointLayerItem(layer, m_map->calibration, layerIndex, kRaceMarkerRadius);
+        } else {
+            auto* shapes = new ShapeLayerItem(layer, m_map->calibration, layerIndex);
+            shapes->setLineWidthScale(kRaceLineWidthScale);
+            item = shapes;
+        }
+        item->setZValue(kRaceOverlayZ + static_cast<double>(i));
+        if (layer.id == fh1::kRacePointsLayer && !m_selectedRoutePoint.isEmpty()) {
+            for (std::size_t f = 0; f < layer.features.size(); ++f) {
+                if (layer.features[f].name == m_selectedRoutePoint) {
+                    item->setHighlightedFeature(static_cast<int>(f));
+                }
+            }
+        }
+        m_scene->addItem(item);
+        m_raceItems.push_back(item);
+    }
+    m_world3D->setOverlay(m_raceOverlay);
+    updateLabelSources();
+}
+
+int MainWindow::selectedRoute() const
+{
+    if (!m_map || m_selectedRace < 0) {
+        return -1;
+    }
+    return m_map->races[static_cast<std::size_t>(m_selectedRace)].route;
+}
+
+void MainWindow::updateEditActions()
+{
+    const bool canEditMap = m_map && (selectedRoute() >= 0 || gameObjectsLayer() >= 0);
+    m_editMapAction->setEnabled(canEditMap);
+    if (!canEditMap && m_editMapAction->isChecked()) {
+        m_editMapAction->setChecked(false);
+    }
+    m_editRaceAction->setEnabled(m_map && m_selectedRace >= 0
+        && m_map->races[static_cast<std::size_t>(m_selectedRace)].eventRow >= 0 && !m_map->carClasses.empty());
+    m_saveEditsAction->setEnabled(!m_edits->modifiedFiles().isEmpty());
+    m_outputFolderAction->setEnabled(m_installOpen);
+
+    // Actions that need a selection are greyed out without one.
+    const int layer = gameObjectsLayer();
+    const bool objectSelected = layer >= 0 && m_selection.layer == layer;
+    bool pointDeletable = false;
+    if (!m_selectedRoutePoint.isEmpty() && selectedRoute() >= 0 && m_editMapAction->isChecked()) {
+        const fh1::RaceRoute& route = m_map->raceRoutes[static_cast<std::size_t>(selectedRoute())];
+        const std::optional<std::size_t> index = fh1::routeTransformIndex(route, m_selectedRoutePoint);
+        pointDeletable = index && fh1::canInsertOrRemove(route, *index);
+    }
+    m_deleteAction->setEnabled(objectSelected || pointDeletable || m_selectedRace >= 0);
+    m_deleteGroupAction->setEnabled(objectSelected
+        && fh1::gameObjectGroup(m_map->gameObjects, static_cast<std::size_t>(m_selection.feature), kGroupRadius).size()
+            > 1);
+    m_clearSelectionAction->setEnabled(m_map && (m_selection.layer >= 0 || m_selectedModel.has_value()));
+    m_hideRaceButton->setEnabled(m_selectedRace >= 0);
+    m_deleteEventAction->setEnabled(m_map && m_selectedRace >= 0);
+}
+
+void MainWindow::setMapEditing(bool editing)
+{
+    m_drag.reset();
+    if (editing) {
+        // The map asks on hover and on press; what is under a press is what
+        // a drag that follows moves. The race's points are drawn on top, so
+        // they win.
+        m_view->setGrabTest([this](const QPointF& scenePos) {
+            m_grab.reset();
+            if (const std::optional<std::size_t> point = routePointAt(scenePos)) {
+                m_grab = MapGrab{true, *point};
+            } else if (const std::optional<std::size_t> object = gameObjectAt(scenePos)) {
+                m_grab = MapGrab{false, *object};
+            }
+            return m_grab.has_value();
+        });
+        if (m_showWorld3D) {
+            showWorld3D(false);
+        }
+        statusBar()->showMessage(tr("Editing on the map: drag a route point or gameplay object to move it, Alt-drag "
+                                    "to turn it, right-click it to add or delete"),
+            10000);
+    } else {
+        m_view->setGrabTest({});
+        if (!m_selectedRoutePoint.isEmpty()) {
+            m_selectedRoutePoint.clear();
+            showRaceOverlay();
+        }
+    }
+    updateEditActions();
+}
+
+std::optional<std::size_t> MainWindow::routePointAt(const QPointF& scenePos) const
+{
+    const int route = selectedRoute();
+    if (route < 0 || !m_raceOverlay) {
+        return std::nullopt;
+    }
+    for (std::size_t i = 0; i < m_raceItems.size() && i < m_raceOverlay->layers.size(); ++i) {
+        const fh1::Layer& layer = m_raceOverlay->layers[i];
+        if (layer.id != fh1::kRacePointsLayer) {
+            continue;
+        }
+        const std::optional<LayerItem::Hit> hit = m_raceItems[i]->hitTest(scenePos, kPickRadius / m_view->zoom());
+        if (!hit) {
+            return std::nullopt;
+        }
+        return fh1::routeTransformIndex(m_map->raceRoutes[static_cast<std::size_t>(route)],
+            layer.features[static_cast<std::size_t>(hit->feature)].name);
+    }
+    return std::nullopt;
+}
+
+int MainWindow::gameObjectsLayer() const
+{
+    if (!m_map || m_map->gameObjects.objects.empty()) {
+        return -1;
+    }
+    for (std::size_t i = 0; i < m_map->layers.size(); ++i) {
+        if (m_map->layers[i].id == QLatin1String("gameobjs")
+            && m_map->layers[i].features.size() == m_map->gameObjects.objects.size()) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::optional<std::size_t> MainWindow::gameObjectAt(const QPointF& scenePos) const
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || static_cast<std::size_t>(layer) >= m_layerItems.size()) {
+        return std::nullopt;
+    }
+    const std::optional<LayerItem::Hit> hit
+        = m_layerItems[static_cast<std::size_t>(layer)]->hitTest(scenePos, kPickRadius / m_view->zoom());
+    if (!hit) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(hit->feature);
+}
+
+void MainWindow::onGrabMoved(const QPointF& scenePos, Qt::KeyboardModifiers modifiers)
+{
+    if (!m_map) {
+        return;
+    }
+    const int route = selectedRoute();
+    const int layer = gameObjectsLayer();
+    if (!m_drag) {
+        if (!m_grab) {
+            return;
+        }
+        MapDrag drag;
+        drag.grab = *m_grab;
+        if (drag.grab.routePoint && route >= 0) {
+            drag.routeBefore = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        } else if (!drag.grab.routePoint && layer >= 0) {
+            drag.objectsBefore
+                = GameObjectsState{m_map->gameObjects, m_map->layers[static_cast<std::size_t>(layer)].features};
+            // Shift takes one object out of its group.
+            drag.group = (modifiers & Qt::ShiftModifier) != 0
+                ? std::vector<std::size_t>{drag.grab.index}
+                : fh1::gameObjectGroup(m_map->gameObjects, drag.grab.index, kGroupRadius);
+        } else {
+            return;
+        }
+        m_drag = std::move(drag);
+    }
+    MapDrag& drag = m_drag.value();
+    const QPointF world = m_map->calibration.imageToWorld(scenePos);
+    const bool turning = (modifiers & Qt::AltModifier) != 0;
+    const std::size_t index = drag.grab.index;
+    if (drag.grab.routePoint) {
+        fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        const QVector3D current = state.transforms[index].position;
+        const QVector3D target(static_cast<float>(world.x()), current.y(), static_cast<float>(world.y()));
+        if (turning) {
+            fh1::turnRoutePoint(state, index, target - current);
+        } else {
+            fh1::moveRoutePoint(state, index, target);
+        }
+        showRaceOverlay();
+    } else {
+        fh1::GameObjectsFile& file = m_map->gameObjects;
+        const QVector3D current = file.objects[index].position;
+        const QVector3D target(static_cast<float>(world.x()), current.y(), static_cast<float>(world.y()));
+        const QVector3D forward = file.objects[index].axes[2];
+        if (turning) {
+            // The group turns about the grabbed object until it faces the
+            // cursor.
+            const QVector3D toward = target - current;
+            if (!QVector3D(toward.x(), 0.0F, toward.z()).isNull()
+                && !QVector3D(forward.x(), 0.0F, forward.z()).isNull()) {
+                fh1::turnGameObjects(file, drag.group, current,
+                    std::atan2(toward.z(), toward.x()) - std::atan2(forward.z(), forward.x()));
+            }
+        } else {
+            const QVector3D delta = target - current;
+            for (const std::size_t member : drag.group) {
+                fh1::moveGameObject(file, member, file.objects[member].position + delta);
+            }
+        }
+        for (const std::size_t member : drag.group) {
+            syncGameObjectFeature(member);
+        }
+        if (auto* item = dynamic_cast<PointLayerItem*>(m_layerItems[static_cast<std::size_t>(layer)])) {
+            item->refreshPositions();
+        }
+    }
+    (turning ? drag.turned : drag.moved) = true;
+}
+
+void MainWindow::onGrabReleased(const QPointF& scenePos, Qt::KeyboardModifiers modifiers)
+{
+    Q_UNUSED(scenePos);
+    Q_UNUSED(modifiers);
+    if (!m_drag) {
+        // A click without a drag selects what it landed on.
+        if (!m_grab) {
+            return;
+        }
+        const MapGrab grab = *m_grab;
+        if (grab.routePoint && selectedRoute() >= 0) {
+            const fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(selectedRoute())];
+            if (grab.index < state.transforms.size()) {
+                m_selectedRoutePoint = state.transforms[grab.index].name;
+                showRaceOverlay();
+                updateEditActions();
+                statusBar()->showMessage(fh1::canInsertOrRemove(state, grab.index)
+                        ? tr("Selected %1; press Delete to delete it").arg(m_selectedRoutePoint)
+                        : tr("Selected %1").arg(m_selectedRoutePoint),
+                    8000);
+            }
+        } else if (!grab.routePoint && gameObjectsLayer() >= 0) {
+            m_selectedRoutePoint.clear();
+            showRaceOverlay();
+            selectFeature(gameObjectsLayer(), static_cast<int>(grab.index), false);
+        }
+        return;
+    }
+    const MapDrag drag = std::move(*m_drag);
+    m_drag.reset();
+    if (!drag.moved && !drag.turned) {
+        return;
+    }
+    const std::size_t index = drag.grab.index;
+    if (drag.grab.routePoint && drag.routeBefore) {
+        const int route = selectedRoute();
+        fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        const QString name = state.transforms[index].name;
+        if (drag.moved) {
+            // Dragging on the map moves a point across it; the ground
+            // decides its height.
+            const QVector3D position = state.transforms[index].position;
+            if (const std::optional<float> ground = groundHeightAt(position.x(), position.z())) {
+                fh1::moveRoutePoint(state, index, QVector3D(position.x(), *ground, position.z()));
+            }
+        }
+        pushRouteEdit(route, *drag.routeBefore, drag.moved ? tr("Move %1").arg(name) : tr("Turn %1").arg(name));
+        showRaceOverlay();
+        showRaceProperties();
+    } else if (!drag.grab.routePoint && drag.objectsBefore) {
+        fh1::GameObjectsFile& file = m_map->gameObjects;
+        if (drag.moved) {
+            // Each object of a group stands on the ground where it ended up.
+            for (const std::size_t member : drag.group) {
+                const QVector3D position = file.objects[member].position;
+                if (const std::optional<float> ground = groundHeightAt(position.x(), position.z())) {
+                    fh1::moveGameObject(file, member, QVector3D(position.x(), *ground, position.z()));
+                    syncGameObjectFeature(member);
+                }
+            }
+        }
+        const QString id = file.objects[index].gameplayId;
+        const auto others = static_cast<int>(drag.group.size()) - 1;
+        QString description = drag.moved ? tr("Move %1").arg(id) : tr("Turn %1").arg(id);
+        if (others > 0) {
+            description = drag.moved ? tr("Move %1 and %n related object(s)", nullptr, others).arg(id)
+                                     : tr("Turn %1 and %n related object(s)", nullptr, others).arg(id);
+        }
+        pushGameObjectsEdit(*drag.objectsBefore, description);
+    }
+}
+
+std::optional<float> MainWindow::groundHeightAt(float x, float z) const
+{
+    if (const std::optional<float> ground = m_world3D->groundHeightAt(x, z)) {
+        return ground;
+    }
+    return m_map ? fh1::roadHeightNear(*m_map, x, z, kRoadSnapRadius) : std::nullopt;
+}
+
+void MainWindow::registerEditableFiles()
+{
+    m_edits->reset(m_install.mediaPath());
+    m_loadedRaces = m_map->races;
+    m_deletedRaces.clear();
+    if (gameObjectsLayer() >= 0) {
+        m_edits->addFile(QString(kGameObjectsFile), tr("GameObjs.xml (gameplay objects)"), m_map->gameObjects.mediaPath,
+            [this](QString*) -> std::optional<QByteArray> { return fh1::writeGameObjects(m_map->gameObjects); });
+    }
+    const QString database = m_install.resolve(QStringLiteral("db/gamedb.slt"));
+    if (!database.isEmpty() && !m_map->races.empty()) {
+        m_edits->addFile(QString(kDatabaseFile), tr("gamedb.slt (race settings)"),
+            QDir(m_install.mediaPath()).relativeFilePath(database), [this, database](QString* error) {
+                return fh1::writeRaceSettings(database, m_map->races, m_loadedRaces, m_deletedRaces, error);
+            });
+    }
+}
+
+void MainWindow::pushRouteEdit(int route, const fh1::RaceRoute& before, const QString& description)
+{
+    const QString key = routeFileKey(route);
+    const auto index = static_cast<std::size_t>(route);
+    // The history names a route file after the races run on it.
+    QStringList races;
+    for (const fh1::Race& race : m_map->races) {
+        if (race.route == route) {
+            races.append(race.name);
+        }
+    }
+    const QString file = QFileInfo(m_map->raceRoutes[index].mediaPath).fileName();
+    m_edits->addFile(key, races.isEmpty() ? file : tr("%1 (%2)").arg(file, races.join(QStringLiteral(", "))),
+        m_map->raceRoutes[index].mediaPath,
+        [this, index](QString*) -> std::optional<QByteArray> { return fh1::writeRaceRoute(m_map->raceRoutes[index]); });
+    m_edits->push(key,
+        new StateCommand<fh1::RaceRoute>(
+            before, m_map->raceRoutes[index],
+            [this, route](const fh1::RaceRoute& state) {
+                m_map->raceRoutes[static_cast<std::size_t>(route)] = state;
+                onRouteChanged(route);
+            },
+            description));
+}
+
+void MainWindow::pushGameObjectsEdit(const GameObjectsState& before, const QString& description)
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0) {
+        return;
+    }
+    GameObjectsState after{m_map->gameObjects, m_map->layers[static_cast<std::size_t>(layer)].features};
+    m_edits->push(QString(kGameObjectsFile),
+        new StateCommand<GameObjectsState>(
+            before, std::move(after),
+            [this, layer](const GameObjectsState& state) {
+                m_map->gameObjects = state.file;
+                m_map->layers[static_cast<std::size_t>(layer)].features = state.features;
+                refreshGameObjects();
+            },
+            description));
+    refreshGameObjects();
+}
+
+void MainWindow::onRouteChanged(int route)
+{
+    if (route == selectedRoute()) {
+        showRaceOverlay();
+        if (m_selection.layer < 0 && !m_selectedModel) {
+            showRaceProperties();
+        }
+    }
+}
+
+void MainWindow::syncGameObjectFeature(std::size_t index)
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || index >= m_map->gameObjects.objects.size()) {
+        return;
+    }
+    const fh1::GameObject& object = m_map->gameObjects.objects[index];
+    fh1::Feature& feature = m_map->layers[static_cast<std::size_t>(layer)].features[index];
+    feature.position = object.position;
+    feature.forward = object.axes[2];
+    for (auto& [name, value] : feature.properties) {
+        if (name == QLatin1String("Position")) {
+            value = fh1::loaders::formatVector(object.position);
+        } else if (name == QLatin1String("Forward (Z axis)")) {
+            value = fh1::loaders::formatVector(object.axes[2]);
+        }
+    }
+}
+
+void MainWindow::refreshGameObjects()
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || static_cast<std::size_t>(layer) >= m_layerItems.size()) {
+        return;
+    }
+    // Features may have gone or come back, so selections by index are
+    // dropped rather than kept pointing at another object.
+    if (m_selection.layer == layer) {
+        clearSelection();
+    }
+    if (!m_script) {
+        saveLayerVisibility();
+    }
+    m_view->setLabelSources({});
+    LayerItem*& slot = m_layerItems[static_cast<std::size_t>(layer)];
+    const fh1::Layer& data = m_map->layers[static_cast<std::size_t>(layer)];
+    auto* item = new PointLayerItem(data, m_map->calibration, layer, markerRadiusFor(data.id));
+    item->setIcons(m_icons);
+    item->setZValue(slot->zValue());
+    m_scene->removeItem(slot);
+    delete slot;
+    slot = item;
+    m_scene->addItem(item);
+    buildLayerTree();
+    m_model->setMap(m_map.get());
+    applyFilter();
+    m_world3D->setEntities(m_map, entityVisibility());
+    updateLabelSources();
+}
+
+void MainWindow::deleteGameObjects(const std::vector<std::size_t>& indices, bool ask)
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || indices.empty()) {
+        return;
+    }
+    std::vector<std::size_t> sorted = indices;
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    if (sorted.back() >= m_map->gameObjects.objects.size()) {
+        return;
+    }
+    std::vector<fh1::Feature>& features = m_map->layers[static_cast<std::size_t>(layer)].features;
+    // Activities that use one of the objects, with the objects they use.
+    QMap<QString, QStringList> used;
+    for (const std::size_t index : sorted) {
+        QString activity;
+        QString config;
+        for (const auto& [name, value] : features[index].properties) {
+            if (name == QLatin1String("Activity")) {
+                activity = value;
+            } else if (name == QLatin1String("Config")) {
+                config = value;
+            }
+        }
+        if (!activity.isEmpty()) {
+            used[tr("%1 (%2)").arg(activity, config)].append(m_map->gameObjects.objects[index].gameplayId);
+        }
+    }
+    const QString first = m_map->gameObjects.objects[sorted.front()].gameplayId;
+    if (ask && !used.isEmpty()) {
+        QStringList lines;
+        for (auto [activity, ids] : used.asKeyValueRange()) {
+            lines.append(tr("%1, used by %2").arg(ids.join(QStringLiteral(", ")), activity));
+        }
+        if (QMessageBox::question(this, tr("Delete Gameplay Objects"),
+                tr("The game's activities use objects you are deleting:\n\n%1\n\nDeleting them can break those "
+                   "activities in the game. Delete anyway?")
+                    .arg(lines.join(QLatin1Char('\n'))),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes) {
+            return;
+        }
+    }
+    GameObjectsState before{m_map->gameObjects, features};
+    for (auto it = sorted.rbegin(); it != sorted.rend(); ++it) {
+        fh1::removeGameObject(m_map->gameObjects, *it);
+        features.erase(features.begin() + static_cast<std::ptrdiff_t>(*it));
+    }
+    const auto others = static_cast<int>(sorted.size()) - 1;
+    pushGameObjectsEdit(before,
+        others > 0 ? tr("Delete %1 and %n related object(s)", nullptr, others).arg(first) : tr("Delete %1").arg(first));
+}
+
+void MainWindow::deleteSelection(bool withGroup)
+{
+    if (!m_map) {
+        return;
+    }
+    // Delete acts on the panel being worked in: in the Events list, the
+    // race event.
+    const QWidget* focus = QApplication::focusWidget();
+    const bool inRaceList = focus != nullptr && (focus == m_raceTable || m_raceTable->isAncestorOf(focus));
+    if (inRaceList && m_selectedRace >= 0) {
+        deleteRaceEvent();
+        return;
+    }
+    const int route = selectedRoute();
+    if (!m_selectedRoutePoint.isEmpty() && route >= 0 && m_editMapAction->isChecked()) {
+        fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        const std::optional<std::size_t> index = fh1::routeTransformIndex(state, m_selectedRoutePoint);
+        if (index && fh1::canInsertOrRemove(state, *index)) {
+            const fh1::RaceRoute before = state;
+            const QString name = m_selectedRoutePoint;
+            fh1::removeRoutePoint(state, *index);
+            m_selectedRoutePoint.clear();
+            pushRouteEdit(route, before, tr("Delete %1").arg(name));
+            showRaceOverlay();
+            showRaceProperties();
+        } else {
+            statusBar()->showMessage(
+                tr("Only checkpoints and waypoints can be deleted; drag the others instead"), 8000);
+        }
+        return;
+    }
+    const int layer = gameObjectsLayer();
+    if (layer >= 0 && m_selection.layer == layer) {
+        const auto index = static_cast<std::size_t>(m_selection.feature);
+        deleteGameObjects(withGroup ? fh1::gameObjectGroup(m_map->gameObjects, index, kGroupRadius)
+                                    : std::vector<std::size_t>{index});
+        return;
+    }
+    if (m_selectedRace >= 0) {
+        deleteRaceEvent();
+        return;
+    }
+    statusBar()->showMessage(tr("Select a race event, a gameplay object, or a checkpoint or waypoint while editing "
+                                "on the map, to delete it"),
+        8000);
+}
+
+void MainWindow::onLayerTreeContextMenu(const QPoint& position)
+{
+    QTreeWidgetItem* item = m_layerTree->itemAt(position);
+    if (item == nullptr) {
+        return;
+    }
+    const int layer = item->data(0, kLayerRole).toInt();
+    const int group = item->data(0, kGroupRole).toInt();
+    const auto setAll = [this](bool checked) {
+        for (int i = 0; i < m_layerTree->topLevelItemCount(); ++i) {
+            m_layerTree->topLevelItem(i)->setCheckState(0, checked ? Qt::Checked : Qt::Unchecked);
+        }
+    };
+    QMenu menu(this);
+    if (layer != kBackgroundLayer && group >= 0 && item->parent() != nullptr) {
+        QTreeWidgetItem* parent = item->parent();
+        menu.addAction(tr("Show Only This Group"), this, [parent, item] {
+            for (int c = 0; c < parent->childCount(); ++c) {
+                parent->child(c)->setCheckState(0, parent->child(c) == item ? Qt::Checked : Qt::Unchecked);
+            }
+        });
+        menu.addAction(tr("Show Every Group of %1").arg(parent->text(0)), this,
+            [parent] { parent->setCheckState(0, Qt::Checked); });
+    } else if (layer != kBackgroundLayer) {
+        menu.addAction(tr("Show Only This Layer"), this, [this, item] {
+            for (int i = 0; i < m_layerTree->topLevelItemCount(); ++i) {
+                QTreeWidgetItem* top = m_layerTree->topLevelItem(i);
+                if (top->data(0, kLayerRole).toInt() != kBackgroundLayer) {
+                    top->setCheckState(0, top == item ? Qt::Checked : Qt::Unchecked);
+                }
+            }
+        });
+    }
+    menu.addSeparator();
+    menu.addAction(tr("Show All"), this, [setAll] { setAll(true); });
+    menu.addAction(tr("Hide All"), this, [setAll] { setAll(false); });
+    menu.exec(m_layerTree->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::onRaceTableContextMenu(const QPoint& position)
+{
+    const QModelIndex row = m_raceTable->indexAt(position);
+    if (!row.isValid() || !m_map) {
+        return;
+    }
+    const int race = m_raceProxy->mapToSource(row).row();
+    if (race != m_selectedRace) {
+        selectRace(race, false);
+    }
+    QMenu menu(this);
+    menu.addAction(tr("&Show Route"), this, &MainWindow::focusOnRace);
+    menu.addAction(m_editMapAction);
+    menu.addAction(m_editRaceAction);
+    menu.addAction(tr("&Hide Race"), this, &MainWindow::clearRace);
+    menu.addAction(m_deleteEventAction);
+    menu.addSeparator();
+    menu.addAction(tr("Copy Event &ID"), this,
+        [id = m_map->races[static_cast<std::size_t>(race)].eventId] { QApplication::clipboard()->setText(id); });
+    menu.exec(m_raceTable->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::addDeleteGameObjectActions(QMenu& menu, std::size_t index)
+{
+    // The menu offers the Edit menu's own actions, which act on the
+    // selection and show their shortcuts, so the object is selected first.
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || index >= m_map->gameObjects.objects.size()) {
+        return;
+    }
+    m_selectedRoutePoint.clear();
+    selectFeature(layer, static_cast<int>(index), false);
+    if (!relatedGameObjects(index).empty()) {
+        menu.addAction(tr("Show &Related Objects"), this, [this, index] {
+            if (index < m_map->gameObjects.objects.size()) {
+                focusOnGameObjectGroup(index);
+            }
+        });
+    }
+    menu.addAction(m_deleteAction);
+    if (fh1::gameObjectGroup(m_map->gameObjects, index, kGroupRadius).size() > 1) {
+        menu.addAction(m_deleteGroupAction);
+    }
+}
+
+void MainWindow::onTableContextMenu(const QPoint& position)
+{
+    const QModelIndex row = m_table->indexAt(position);
+    if (!row.isValid() || !m_map) {
+        return;
+    }
+    const FeatureTableModel::Location location = m_model->locationAt(m_proxy->mapToSource(row).row());
+    if (location.layer < 0) {
+        return;
+    }
+    const fh1::Feature& feature
+        = m_map->layers[static_cast<std::size_t>(location.layer)].features[static_cast<std::size_t>(location.feature)];
+    QMenu menu(this);
+    menu.addAction(tr("&Jump To"), this, [this, location] {
+        m_syncingSelection = true;
+        selectFeature(location.layer, location.feature, true);
+        m_syncingSelection = false;
+    });
+    menu.addAction(tr("Copy &ID"), this, [name = feature.name] { QApplication::clipboard()->setText(name); });
+    menu.addAction(tr("Copy &Position"), this,
+        [position = feature.position] { QApplication::clipboard()->setText(fh1::loaders::formatVector(position)); });
+    if (location.layer == gameObjectsLayer()) {
+        menu.addSeparator();
+        addDeleteGameObjectActions(menu, static_cast<std::size_t>(location.feature));
+    }
+    menu.exec(m_table->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::editRaceSettings()
+{
+    if (!m_map || m_selectedRace < 0) {
+        return;
+    }
+    const int raceIndex = m_selectedRace;
+    const fh1::Race& race = m_map->races[static_cast<std::size_t>(raceIndex)];
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Race Settings: %1").arg(race.name));
+
+    auto* laps = new QSpinBox;
+    laps->setRange(1, kMaxLaps);
+    laps->setValue(race.laps);
+    // Every car needs a place on the start grid.
+    int gridSlots = 0;
+    if (race.route >= 0) {
+        gridSlots = static_cast<int>(
+            fh1::routePoints(m_map->raceRoutes[static_cast<std::size_t>(race.route)], fh1::RoutePointKind::StartSlot)
+                .size());
+    }
+    auto* opponents = new QSpinBox;
+    opponents->setRange(0, std::max(gridSlots > 0 ? gridSlots - 1 : kDefaultMaxOpponents, race.opponents));
+    opponents->setValue(race.opponents);
+    auto* prize = new QSpinBox;
+    prize->setRange(0, kMaxPrize);
+    prize->setSingleStep(kPrizeStep);
+    prize->setGroupSeparatorShown(true);
+    prize->setSuffix(tr(" CR"));
+    prize->setValue(race.prize);
+    auto* carClass = new QComboBox;
+    for (const fh1::CarClass& entry : m_map->carClasses) {
+        carClass->addItem(entry.name, entry.id);
+    }
+    carClass->setCurrentIndex(std::max(0, carClass->findData(race.carClassId)));
+    auto* start = new QTimeEdit(QTime(0, 0).addSecs(race.timeOfDay));
+    start->setDisplayFormat(QStringLiteral("HH:mm"));
+
+    auto* form = new QFormLayout;
+    form->addRow(tr("&Laps:"), laps);
+    form->addRow(tr("&Opponents:"), opponents);
+    form->addRow(tr("&Prize:"), prize);
+    form->addRow(tr("Car &class:"), carClass);
+    form->addRow(tr("&Start time:"), start);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    auto* layout = new QVBoxLayout(dialog);
+    layout->addLayout(form);
+    layout->addWidget(buttons);
+
+    connect(dialog, &QDialog::accepted, this, [=, this] {
+        if (!m_map || static_cast<std::size_t>(raceIndex) >= m_map->races.size()) {
+            return;
+        }
+        fh1::Race& target = m_map->races[static_cast<std::size_t>(raceIndex)];
+        const fh1::Race before = target;
+        target.laps = laps->value();
+        target.opponents = opponents->value();
+        target.prize = prize->value();
+        target.carClassId = carClass->currentData().toInt();
+        target.carClass = carClass->currentText();
+        target.timeOfDay = QTime(0, 0).secsTo(start->time());
+        if (target.laps == before.laps && target.opponents == before.opponents && target.prize == before.prize
+            && target.carClassId == before.carClassId && target.timeOfDay == before.timeOfDay) {
+            return;
+        }
+        const auto apply = [this, raceIndex](const fh1::Race& state) {
+            m_map->races[static_cast<std::size_t>(raceIndex)] = state;
+            m_raceModel->refresh();
+            onEditsChanged();
+        };
+        m_edits->push(QString(kDatabaseFile),
+            new StateCommand<fh1::Race>(before, target, apply, tr("Change the settings of %1").arg(target.eventId)));
+        apply(target);
+    });
+    dialog->open();
+}
+
+void MainWindow::deleteRaceEvent()
+{
+    if (!m_map || m_selectedRace < 0) {
+        return;
+    }
+    const int raceIndex = m_selectedRace;
+    const fh1::Race race = m_map->races[static_cast<std::size_t>(raceIndex)];
+
+    // The event's gameplay objects: the one named after it and its group.
+    std::vector<std::size_t> objects;
+    if (gameObjectsLayer() >= 0) {
+        for (std::size_t i = 0; i < m_map->gameObjects.objects.size(); ++i) {
+            if (m_map->gameObjects.objects[i].gameplayId.compare(race.eventId, Qt::CaseInsensitive) == 0) {
+                objects = fh1::gameObjectGroup(m_map->gameObjects, i, kGroupRadius);
+                break;
+            }
+        }
+    }
+    // The rows that refer to it, as the game's database has them.
+    const QString database = m_install.resolve(QStringLiteral("db/gamedb.slt"));
+    std::vector<std::pair<QString, int>> references;
+    if (!database.isEmpty() && race.eventRow >= 0) {
+        fh1::GameDatabase db;
+        if (db.open(database)) {
+            references = db.eventReferences(race.eventRow);
+        }
+    }
+    static const QHash<QString, QString> tableNames{
+        {QStringLiteral("Races"), tr("race")},
+        {QStringLiteral("EventParticipants"), tr("AI drivers")},
+        {QStringLiteral("EventRecommendedCars"), tr("recommended cars")},
+        {QStringLiteral("EventRestrictions"), tr("car restrictions")},
+        {QStringLiteral("EventShowroomChallenges"), tr("showroom challenges")},
+        {QStringLiteral("EventUIColors"), tr("colours")},
+        {QStringLiteral("Event_Music"), tr("music")},
+        {QStringLiteral("EventHubInitialEvents"), tr("hub")},
+        {QStringLiteral("Rewards_EventPrizes"), tr("prizes")},
+        {QStringLiteral("Rewards_EventUnlock"), tr("unlocks")},
+    };
+    QStringList referenceText;
+    for (const auto& [table, count] : references) {
+        referenceText.append(QStringLiteral("%1 %2").arg(tableNames.value(table, table)).arg(count));
+    }
+
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(tr("Delete Race Event"));
+    auto* question = new QLabel(
+        tr("<b>Delete %1 (%2)?</b> Choose what goes:").arg(race.name.toHtmlEscaped(), race.eventId.toHtmlEscaped()));
+    QStringList objectNames;
+    for (std::size_t i = 0; i < objects.size() && i < kListedNames; ++i) {
+        objectNames.append(m_map->gameObjects.objects[objects[i]].gameplayId);
+    }
+    if (objects.size() > kListedNames) {
+        objectNames.append(tr("…"));
+    }
+    auto* objectsBox = new QCheckBox(objects.empty()
+            ? tr("Gameplay objects: none are named after %1").arg(race.eventId)
+            : tr("Its %n gameplay object(s) in GameObjs.xml: %1", nullptr, static_cast<int>(objects.size()))
+                  .arg(objectNames.join(QStringLiteral(", "))));
+    objectsBox->setChecked(!objects.empty());
+    objectsBox->setEnabled(!objects.empty());
+    const bool canDeleteRows = !database.isEmpty() && race.eventRow >= 0;
+    auto* rowsBox = new QCheckBox(!canDeleteRows ? tr("Database rows: the event is not in gamedb.slt")
+            : referenceText.isEmpty()            ? tr("The event in gamedb.slt")
+                                                 : tr("The event in gamedb.slt, and the rows that refer to it: %1")
+                                                       .arg(referenceText.join(QStringLiteral(", "))));
+    rowsBox->setChecked(canDeleteRows);
+    rowsBox->setEnabled(canDeleteRows);
+    auto* note = new QLabel(tr("Left as they are: its props (barriers, banners) in bin.zip, its activity in "
+                               "gamemodes.zip, its effects in ParticleEmitters.xml, and its route file, which "
+                               "other races can share."));
+    note->setWordWrap(true);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    QPushButton* deleteButton = buttons->addButton(tr("Delete"), QDialogButtonBox::AcceptRole);
+    const auto updateButton = [deleteButton, objectsBox, rowsBox] {
+        deleteButton->setEnabled(objectsBox->isChecked() || rowsBox->isChecked());
+    };
+    connect(objectsBox, &QCheckBox::toggled, dialog, updateButton);
+    connect(rowsBox, &QCheckBox::toggled, dialog, updateButton);
+    updateButton();
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    auto* layout = new QVBoxLayout(dialog);
+    layout->addWidget(question);
+    layout->addWidget(objectsBox);
+    layout->addWidget(rowsBox);
+    layout->addWidget(note);
+    layout->addWidget(buttons);
+
+    connect(dialog, &QDialog::accepted, this, [this, raceIndex, eventId = race.eventId, objects, objectsBox, rowsBox] {
+        if (!m_map || static_cast<std::size_t>(raceIndex) >= m_map->races.size()
+            || m_map->races[static_cast<std::size_t>(raceIndex)].eventId != eventId) {
+            return;
+        }
+        const bool deleteObjects = objectsBox->isChecked();
+        const bool deleteRows = rowsBox->isChecked();
+        clearRace();
+        if (deleteObjects) {
+            deleteGameObjects(objects, false);
+        }
+        if (deleteRows) {
+            const DatabaseState before{m_map->races, m_loadedRaces, m_deletedRaces};
+            DatabaseState after = before;
+            const auto at = static_cast<std::ptrdiff_t>(raceIndex);
+            after.deleted.push_back(after.loaded[static_cast<std::size_t>(raceIndex)]);
+            after.races.erase(after.races.begin() + at);
+            after.loaded.erase(after.loaded.begin() + at);
+            const auto apply = [this](const DatabaseState& state) {
+                clearRace();
+                m_map->races = state.races;
+                m_loadedRaces = state.loaded;
+                m_deletedRaces = state.deleted;
+                m_raceModel->setMap(m_map.get());
+                applyRaceFilter();
+                onEditsChanged();
+            };
+            m_edits->push(QString(kDatabaseFile),
+                new StateCommand<DatabaseState>(before, after, apply, tr("Delete event %1").arg(eventId)));
+            apply(after);
+        }
+    });
+    dialog->open();
+}
+
+void MainWindow::onEditsChanged()
+{
+    m_raceModel->setModifiedRaces(editedRaces());
+    setWindowModified(!m_edits->modifiedFiles().isEmpty());
+    updateEditActions();
+    updateEventPropsChoices();
+    if (m_selectedRace >= 0 && m_selection.layer < 0 && !m_selectedModel) {
+        showRaceProperties();
+    }
+}
+
+QSet<int> MainWindow::editedRaces() const
+{
+    QSet<int> races;
+    if (!m_map) {
+        return races;
+    }
+    const bool database = m_edits->isModified(QString(kDatabaseFile));
+    for (std::size_t i = 0; i < m_map->races.size(); ++i) {
+        const fh1::Race& race = m_map->races[i];
+        bool edited = race.route >= 0 && m_edits->isModified(routeFileKey(race.route));
+        if (database && i < m_loadedRaces.size()) {
+            const fh1::Race& loaded = m_loadedRaces[i];
+            edited = edited || race.laps != loaded.laps || race.opponents != loaded.opponents
+                || race.prize != loaded.prize || race.carClassId != loaded.carClassId
+                || race.timeOfDay != loaded.timeOfDay;
+        }
+        if (edited) {
+            races.insert(static_cast<int>(i));
+        }
+    }
+    return races;
 }
 
 void MainWindow::removeRaceOverlay()
@@ -647,6 +1672,8 @@ void MainWindow::clearRace()
     removeRaceOverlay();
     const bool hadRace = m_selectedRace >= 0;
     m_selectedRace = -1;
+    m_selectedRoutePoint.clear();
+    updateEditActions();
     applyEventPropFilter();
     m_hideRaceButton->setEnabled(false);
     if (!m_syncingSelection) {
@@ -689,6 +1716,8 @@ void MainWindow::showRaceProperties()
         {tr("Route"), race.routeName},
         {tr("Route ID"), QString::number(race.routeId)},
         {tr("Laps"), QString::number(race.laps)},
+        {tr("Opponents"), QString::number(race.opponents)},
+        {tr("Start time"), QTime(0, 0).addSecs(race.timeOfDay).toString(QStringLiteral("HH:mm"))},
         {tr("Length"), tr("%1 m").arg(locale.toString(race.length))},
         {tr("Car class"), race.carClass},
         {tr("Prize"), tr("%1 CR").arg(locale.toString(race.prize))},
@@ -707,6 +1736,13 @@ void MainWindow::showRaceProperties()
                 static_cast<int>(fh1::routePoints(route, fh1::RoutePointKind::StartSlot).size()))});
         rows.append(
             {tr("Checkpoints"), QString::number(fh1::routePoints(route, fh1::RoutePointKind::Checkpoint).size())});
+        if (fh1::isRouteEdited(route)) {
+            rows.append({tr("Route edits"),
+                m_edits->isModified(routeFileKey(race.route)) ? tr("not saved yet (File → Save Edits)") : tr("saved")});
+            if (!route.racingLine.empty()) {
+                rows.append({tr("Racing line"), tr("the game's; it does not follow the edited checkpoints")});
+            }
+        }
     }
     switch (m_eventProps) {
     case EventProps::None:
@@ -763,7 +1799,10 @@ void MainWindow::updateEventPropsChoices()
     action->setText(haveRace ? tr("&Selected Race: %1").arg(escaped) : tr("&Selected Race (none selected)"));
     action->setEnabled(haveRace);
 
-    m_selectedRaceLabel->setText(haveRace ? tr("Selected: %1").arg(race) : tr("No race selected"));
+    const bool edited = haveRace && editedRaces().contains(m_selectedRace);
+    m_selectedRaceLabel->setText(!haveRace ? tr("No race selected")
+            : edited                       ? tr("Selected: %1, route edited").arg(race)
+                                           : tr("Selected: %1").arg(race));
 
     const auto item = static_cast<int>(selectedRace);
     m_eventPropsCombo->setItemText(
@@ -980,6 +2019,11 @@ void MainWindow::loadTrack(const QString& track)
     if (!m_installOpen || track.isEmpty()) {
         return;
     }
+    // Loading replaces the routes, edits and all.
+    if (!m_script && !m_watcher.isRunning() && !m_edits->maybeSave()) {
+        m_trackCombo->setCurrentText(m_trackName);
+        return;
+    }
     if (m_watcher.isRunning()) {
         m_pendingTrack = track;
         return;
@@ -1049,6 +2093,7 @@ void MainWindow::onLoadFinished()
     m_model->setMap(m_map.get());
     applyFilter();
     m_raceModel->setMap(m_map.get());
+    registerEditableFiles();
     applyRaceFilter();
     m_noDataLabel->setText(tr("<p><b>Nothing to show for %1</b></p>"
                               "<p>Its ribbon files hold no placed objects, routes or zones, and the game "
@@ -1086,9 +2131,9 @@ void MainWindow::buildScene()
     m_background = nullptr;
 
     const fh1::MapCalibration calibration = m_map->calibration;
-    QHash<QString, QPixmap> icons;
+    m_icons.clear();
     for (auto [key, image] : m_map->icons.asKeyValueRange()) {
-        icons.insert(key,
+        m_icons.insert(key,
             QPixmap::fromImage(image.scaled(kIconPixels, kIconPixels, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
     }
     QRectF bounds;
@@ -1106,7 +2151,7 @@ void MainWindow::buildScene()
         LayerItem* item = nullptr;
         if (layer.kind == fh1::FeatureKind::Point) {
             auto* points = new PointLayerItem(layer, calibration, static_cast<int>(i), markerRadiusFor(layer.id));
-            points->setIcons(icons);
+            points->setIcons(m_icons);
             item = points;
         } else {
             item = new ShapeLayerItem(layer, calibration, static_cast<int>(i));
@@ -1249,6 +2294,7 @@ void MainWindow::selectFeature(int layer, int feature, bool focus)
     }
     m_selection = {layer, feature};
     item->setHighlightedFeature(feature);
+    showRelatedGameObjects();
 
     // A feature picked from the table may belong to a hidden group; show the
     // group so the highlight is visible on the map.
@@ -1267,6 +2313,7 @@ void MainWindow::selectFeature(int layer, int feature, bool focus)
         }
     }
     showProperties();
+    updateEditActions();
 
     if (!m_syncingSelection) {
         m_syncingSelection = true;
@@ -1294,6 +2341,7 @@ void MainWindow::clearSelection()
         m_layerItems[static_cast<std::size_t>(m_selection.layer)]->setHighlightedFeature(-1);
     }
     m_selection = {};
+    showRelatedGameObjects();
     m_world3D->setHighlightedEntity(-1, -1);
     m_selectedModel.reset();
     m_world3D->setHighlightedModel(std::nullopt);
@@ -1305,6 +2353,7 @@ void MainWindow::clearSelection()
     }
     // With nothing else selected, the panel describes the race shown.
     showRaceProperties();
+    updateEditActions();
 }
 
 void MainWindow::selectModel(const fh1::PickHit& hit)
@@ -1317,6 +2366,7 @@ void MainWindow::selectModel(const fh1::PickHit& hit)
     // its own there.
     m_debugPanel->showModel(hit.chunk);
     showModelProperties();
+    updateEditActions();
 }
 
 void MainWindow::showModelProperties()
@@ -1391,14 +2441,93 @@ void MainWindow::showProperties()
         {tr("Source"), layer.source},
     };
     rows.append(feature.properties);
+    // Related gameplay objects are listed last; double-clicking one selects
+    // it.
+    std::vector<std::size_t> related;
+    if (m_selection.layer == gameObjectsLayer()) {
+        related = relatedGameObjects(static_cast<std::size_t>(m_selection.feature));
+    }
+    const auto firstRelated = static_cast<int>(rows.size());
+    for (const std::size_t index : related) {
+        const fh1::Feature& other = layer.features[index];
+        rows.append({tr("Related object"),
+            other.label.isEmpty() || other.label == other.name ? other.name
+                                                               : tr("%1 (%2)").arg(other.name, other.label)});
+    }
 
     m_properties->setRowCount(static_cast<int>(rows.size()));
     for (int i = 0; i < rows.size(); ++i) {
         auto* value = new QTableWidgetItem(rows.at(i).second);
         value->setToolTip(rows.at(i).second);
-        m_properties->setItem(i, 0, new QTableWidgetItem(rows.at(i).first));
+        auto* name = new QTableWidgetItem(rows.at(i).first);
+        if (i >= firstRelated) {
+            const auto index = static_cast<qulonglong>(related[static_cast<std::size_t>(i - firstRelated)]);
+            for (QTableWidgetItem* cell : {name, value}) {
+                cell->setData(kRelatedObjectRole, index);
+                cell->setToolTip(tr("%1\nDouble-click to select it").arg(rows.at(i).second));
+            }
+        }
+        m_properties->setItem(i, 0, name);
         m_properties->setItem(i, 1, value);
     }
+}
+
+std::vector<std::size_t> MainWindow::relatedGameObjects(std::size_t index) const
+{
+    if (gameObjectsLayer() < 0) {
+        return {};
+    }
+    std::vector<std::size_t> group = fh1::gameObjectGroup(m_map->gameObjects, index, kGroupRadius);
+    if (!group.empty()) {
+        group.erase(group.begin());
+    }
+    return group;
+}
+
+void MainWindow::showRelatedGameObjects()
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0 || static_cast<std::size_t>(layer) >= m_layerItems.size()) {
+        return;
+    }
+    auto* item = dynamic_cast<PointLayerItem*>(m_layerItems[static_cast<std::size_t>(layer)]);
+    if (item == nullptr) {
+        return;
+    }
+    std::vector<int> related;
+    if (m_selection.layer == layer) {
+        for (const std::size_t index : relatedGameObjects(static_cast<std::size_t>(m_selection.feature))) {
+            related.push_back(static_cast<int>(index));
+        }
+    }
+    item->setRelatedFeatures(std::move(related));
+}
+
+void MainWindow::focusOnGameObjectGroup(std::size_t index)
+{
+    const int layer = gameObjectsLayer();
+    if (layer < 0) {
+        return;
+    }
+    selectFeature(layer, static_cast<int>(index), false);
+    // QRectF::united() ignores zero-size rectangles, so the bounds of the
+    // points are gathered from their extremes.
+    double left = std::numeric_limits<double>::max();
+    double top = std::numeric_limits<double>::max();
+    double right = std::numeric_limits<double>::lowest();
+    double bottom = std::numeric_limits<double>::lowest();
+    for (const std::size_t member : fh1::gameObjectGroup(m_map->gameObjects, index, kGroupRadius)) {
+        const QVector3D& p = m_map->gameObjects.objects[member].position;
+        const QPointF scene = m_map->calibration.worldToImage(p.x(), p.z());
+        left = std::min(left, scene.x());
+        top = std::min(top, scene.y());
+        right = std::max(right, scene.x());
+        bottom = std::max(bottom, scene.y());
+    }
+    // A margin, so markers at the edges are not cut in half.
+    constexpr double kMargin = 8.0;
+    m_view->fitRect(
+        QRectF(QPointF(left, top), QPointF(right, bottom)).adjusted(-kMargin, -kMargin, kMargin, kMargin), kFocusZoom);
 }
 
 void MainWindow::copyProperties()
@@ -1451,6 +2580,38 @@ void MainWindow::onMapContextMenu(const QPointF& scenePos, const QPoint& globalP
     }
     const QPointF world = m_map->calibration.imageToWorld(scenePos);
     QMenu menu(this);
+    const int route = selectedRoute();
+    const bool editing = m_editMapAction->isChecked();
+    const std::optional<std::size_t> point = editing ? routePointAt(scenePos) : std::optional<std::size_t>();
+    const std::optional<std::size_t> object = !point ? gameObjectAt(scenePos) : std::optional<std::size_t>();
+    if (route >= 0 && point && fh1::canInsertOrRemove(m_map->raceRoutes[static_cast<std::size_t>(route)], *point)) {
+        const fh1::RaceRoute& state = m_map->raceRoutes[static_cast<std::size_t>(route)];
+        const bool checkpoint = fh1::routePointKind(state.transforms[*point].name) == fh1::RoutePointKind::Checkpoint;
+        const QString name = state.transforms[*point].name;
+        const auto edit = [this, route, name](const QString& description, auto&& change) {
+            fh1::RaceRoute& target = m_map->raceRoutes[static_cast<std::size_t>(route)];
+            const fh1::RaceRoute before = target;
+            const std::optional<std::size_t> index = fh1::routeTransformIndex(target, name);
+            if (index && change(target, *index)) {
+                pushRouteEdit(route, before, description);
+                showRaceOverlay();
+                showRaceProperties();
+            }
+        };
+        menu.addAction(checkpoint ? tr("Add Checkpoint After") : tr("Add Waypoint After"), this, [=] {
+            edit(tr("Add after %1").arg(name), [](fh1::RaceRoute& target, std::size_t index) {
+                return fh1::insertRoutePointAfter(target, index).has_value();
+            });
+        });
+        m_selectedRoutePoint = name;
+        showRaceOverlay();
+        updateEditActions();
+        menu.addAction(m_deleteAction);
+        menu.addSeparator();
+    } else if (object) {
+        addDeleteGameObjectActions(menu, *object);
+        menu.addSeparator();
+    }
     menu.addAction(tr("Copy World Position (X, Z)"), this, [world] {
         QApplication::clipboard()->setText(
             QStringLiteral("%1, %2").arg(world.x(), 0, 'f', 2).arg(world.y(), 0, 'f', 2));
@@ -1555,7 +2716,7 @@ void MainWindow::setLoading(bool loading)
     m_zoomOutAction->setEnabled(haveMap);
     m_fitAction->setEnabled(haveMap);
     m_findAction->setEnabled(haveMap);
-    m_clearSelectionAction->setEnabled(haveMap);
+    m_clearSelectionAction->setEnabled(haveMap && (m_selection.layer >= 0 || m_selectedModel.has_value()));
     m_warningsAction->setEnabled(haveMap && !m_map->warnings.isEmpty());
     m_view2DAction->setEnabled(haveMap);
     m_view3DAction->setEnabled(haveMap);
@@ -1566,7 +2727,7 @@ void MainWindow::setLoading(bool loading)
 
 void MainWindow::updateWindowTitle()
 {
-    setWindowTitle(m_trackName.isEmpty() ? tr("FH1 Map Viewer") : tr("%1 — FH1 Map Viewer").arg(m_trackName));
+    setWindowTitle(m_trackName.isEmpty() ? tr("FH1 Map Viewer[*]") : tr("%1[*] — FH1 Map Viewer").arg(m_trackName));
 }
 
 void MainWindow::runScript()
@@ -1833,12 +2994,17 @@ void MainWindow::placeWorldCamera()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (!m_script && !m_edits->maybeSave()) {
+        event->ignore();
+        return;
+    }
     if (!m_script) {
         QSettings settings;
         settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
         settings.setValue(QStringLiteral("window/state"), saveState());
         settings.setValue(QStringLiteral("window/stateHasWorldDebug"), true);
         settings.setValue(QStringLiteral("window/stateHasEvents"), true);
+        settings.setValue(QStringLiteral("window/stateHasEditHistory"), true);
     }
     QMainWindow::closeEvent(event);
 }

@@ -1,5 +1,8 @@
+#include "EditHistoryPanel.h"
 #include "FeatureTableModel.h"
+#include "GameObjects.h"
 #include "LayerItem.h"
+#include "Loaders.h"
 #include "MainWindow.h"
 #include "MapView.h"
 #include "RaceTableModel.h"
@@ -7,19 +10,29 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGraphicsScene>
 #include <QMessageBox>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
+#include <QSpinBox>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QStandardItemModel>
 #include <QStandardPaths>
+#include <QTableView>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QTreeWidget>
 
+#include <array>
 #include <functional>
 #include <map>
 
@@ -53,6 +66,89 @@ void answerNextMessageBox(const QString& button)
         }
     });
     poll->start(10);
+}
+
+/// A game folder with one track, "testbed", whose database has one race on
+/// route 5: a start slot and two checkpoints. Its gameplay objects are
+/// `placed`, by ID and X, in a row along Z = 0.
+using PlacedObjects = std::vector<std::pair<const char*, int>>;
+
+bool writeRaceInstall(
+    const QString& root, const PlacedObjects& placed = {{"FR98", 50}, {"FR98_NODE", 60}, {"flyer_001", -50}})
+{
+    const QString ribbon = root + QStringLiteral("/media/tracks/testbed/Ribbon_00");
+    if (!QDir().mkpath(ribbon) || !QDir().mkpath(root + QStringLiteral("/media/db"))) {
+        return false;
+    }
+    QFile route(ribbon + QStringLiteral("/TrackRoute005.xml"));
+    if (!route.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    route.write("<TrackRoute>\r\n\t<NamedTransforms>\r\n"
+                "\t\t<NamedTransform name='route_checkpoint_00' width='20.0'>\r\n"
+                "\t\t\t<Transform pos.x='0.0' pos.y='5.0' pos.z='0.0' facing.x='0.0' facing.y='0.0' "
+                "facing.z='1.0'/>\r\n\t\t</NamedTransform>\r\n"
+                "\t\t<NamedTransform name='route_checkpoint_01' width='20.0'>\r\n"
+                "\t\t\t<Transform pos.x='0.0' pos.y='5.0' pos.z='100.0' facing.x='0.0' facing.y='0.0' "
+                "facing.z='1.0'/>\r\n\t\t</NamedTransform>\r\n"
+                "\t\t<NamedTransform name='start_location_00'>\r\n"
+                "\t\t\t<Transform pos.x='0.0' pos.y='5.0' pos.z='-100.0' facing.x='0.0' facing.y='0.0' "
+                "facing.z='1.0'/>\r\n\t\t</NamedTransform>\r\n"
+                "\t</NamedTransforms>\r\n</TrackRoute>\r\n");
+    route.close();
+
+    // By default a race start with its node 10 m east, and a flyer on its
+    // own. That race has no event in the database, so its markers are not
+    // in the "Event objects" group, which the map hides at first.
+    QFile objects(ribbon + QStringLiteral("/GameObjs.xml"));
+    if (!objects.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    objects.write("<?xml version=\"1.0\" ?>\r\n<GameObjs>\r\n");
+    for (std::size_t i = 0; i < placed.size(); ++i) {
+        objects.write(QStringLiteral("\t<Obj%1 GameplayID=\"%2\">\r\n"
+                                     "\t\t<Pos x=\"%3.000000\" y=\"5.000000\" z=\"0.000000\"/>\r\n"
+                                     "\t\t<Orientation>\r\n"
+                                     "\t\t\t<XAxis x=\"1.000000\" y=\"0.000000\" z=\"0.000000\"/>\r\n"
+                                     "\t\t\t<YAxis x=\"0.000000\" y=\"1.000000\" z=\"0.000000\"/>\r\n"
+                                     "\t\t\t<ZAxis x=\"0.000000\" y=\"0.000000\" z=\"1.000000\"/>\r\n"
+                                     "\t\t</Orientation>\r\n\t</Obj%1>\r\n")
+                .arg(i)
+                .arg(QLatin1String(placed[i].first))
+                .arg(placed[i].second)
+                .toLatin1());
+    }
+    objects.write("</GameObjs>\r\n");
+    objects.close();
+
+    const QString connection = QStringLiteral("race-install");
+    bool ok = true;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        db.setDatabaseName(root + QStringLiteral("/media/db/gamedb.slt"));
+        ok = db.open();
+        QSqlQuery query(db);
+        const char* const createEvents = "CREATE TABLE Events (Id, Name, ShortName, Description, CareerTypeId, "
+                                         "TargetClass, CashPrize, HorizonEventID, CareerEventStyle, "
+                                         "NumberOfDrivers, TimeOfDayStart)";
+        for (const char* statement : {
+                 "CREATE TABLE Tracks (id, DisplayName, MediaName, Length, RouteId, DevName)",
+                 createEvents,
+                 "CREATE TABLE Races (Id, EventId, RaceNumber, TrackId, NumLaps)",
+                 "CREATE TABLE CareerEventTypes (id, Name)",
+                 "CREATE TABLE CarClasses (Id, DisplayName)",
+                 "INSERT INTO Tracks VALUES (1005, 'Test Loop', 'testbed', 1200, 5, 'TEST_LOOP')",
+                 "INSERT INTO Events VALUES (1, 'Test Race', '', '', 1, 0, 1000, 'FR99', 1, 7, 36000)",
+                 "INSERT INTO Races VALUES (1, 1, 1, 1005, 2)",
+                 "INSERT INTO CareerEventTypes VALUES (1, 'Circuit')",
+                 "INSERT INTO CarClasses VALUES (0, 'D')",
+             }) {
+            ok = ok && query.exec(QString::fromLatin1(statement));
+        }
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(connection);
+    return ok;
 }
 
 /// 1 image pixel per metre, Z not flipped: scene coordinates equal world X/Z.
@@ -153,6 +249,283 @@ private slots:
         QVERIFY(selectedRace->isChecked());
         QCOMPARE(settings.value(QStringLiteral("view/eventProps")).toString(), QStringLiteral("race"));
         settings.remove(QStringLiteral("view/eventProps"));
+    }
+
+    void routeEditingOnTheMap()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QVERIFY(writeRaceInstall(dir.filePath(QStringLiteral("disc"))));
+        const QString output = dir.filePath(QStringLiteral("edited"));
+        QSettings().setValue(QStringLiteral("edit/outputFolder"), output);
+
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.openGameFolder(dir.filePath(QStringLiteral("disc"))));
+
+        QTableView* races = nullptr;
+        for (QTableView* table : window.findChildren<QTableView*>()) {
+            if (table->model()->headerData(0, Qt::Horizontal).toString() == QLatin1String("Event")) {
+                races = table;
+            }
+        }
+        QVERIFY(races != nullptr);
+        QTRY_COMPARE(races->model()->rowCount(), 1);
+        races->selectionModel()->select(
+            races->model()->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        QAction* editRoute = actions[QStringLiteral("Edit on Map")];
+        QAction* saveRoute = actions[QStringLiteral("Save Edits")];
+        QVERIFY(editRoute != nullptr && saveRoute != nullptr);
+        QVERIFY(editRoute->isEnabled());
+        QVERIFY(!saveRoute->isEnabled());
+        editRoute->setChecked(true);
+
+        // Drag checkpoint 01 (world 0, 100) 30 m east. The track has no map
+        // image, so a scene unit is a metre with Z pointing up the screen.
+        auto* view = window.findChild<MapView*>();
+        QVERIFY(view != nullptr);
+        const QPoint from = view->mapFromScene(QPointF(0.0, -100.0));
+        const QPoint to = view->mapFromScene(QPointF(30.0, -100.0));
+        QTest::mousePress(view->viewport(), Qt::LeftButton, {}, from);
+        QTest::mouseMove(view->viewport(), (from + to) / 2);
+        QTest::mouseMove(view->viewport(), to);
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, to);
+        QVERIFY(saveRoute->isEnabled());
+        QVERIFY(window.isWindowModified());
+        QVERIFY(races->model()->data(races->model()->index(0, 0)).toString().endsWith(QLatin1String(" *")));
+
+        // Undoing leaves nothing to save; redoing brings the edit back.
+        QAction* undo = nullptr;
+        QAction* redo = nullptr;
+        for (auto& [text, action] : actions) {
+            if (text.startsWith(QLatin1String("Undo"))) {
+                undo = action;
+            } else if (text.startsWith(QLatin1String("Redo"))) {
+                redo = action;
+            }
+        }
+        QVERIFY(undo != nullptr && redo != nullptr);
+        QVERIFY(undo->text().contains(QLatin1String("route_checkpoint_01")));
+        undo->trigger();
+        QVERIFY(!saveRoute->isEnabled());
+        redo->trigger();
+        QVERIFY(saveRoute->isEnabled());
+
+        saveRoute->trigger();
+        QVERIFY(!window.isWindowModified());
+        QFile saved(output + QStringLiteral("/tracks/testbed/Ribbon_00/TrackRoute005.xml"));
+        QVERIFY(saved.open(QIODevice::ReadOnly));
+        const fh1::RaceRoute route = fh1::loaders::raceRoute(saved.readAll(), {});
+        QCOMPARE(route.transforms.size(), std::size_t{3});
+        QCOMPARE(route.transforms[1].name, QStringLiteral("route_checkpoint_01"));
+        const QVector3D moved = route.transforms[1].position;
+        QVERIFY2(std::abs(moved.x() - 30.0F) < 3.0F && std::abs(moved.z() - 100.0F) < 3.0F,
+            qPrintable(QStringLiteral("%1, %2").arg(moved.x()).arg(moved.z())));
+        // With no 3D world or roads to go by, the height stays.
+        QCOMPARE(moved.y(), 5.0F);
+        QCOMPARE(route.transforms[0].position, QVector3D(0.0F, 5.0F, 0.0F));
+
+        // Choosing the game folder saves over the disc's own paths.
+        QAction* outputFolder = actions[QStringLiteral("Where to Save Edits…")];
+        QVERIFY(outputFolder != nullptr);
+        answerNextMessageBox(QStringLiteral("Game Folder"));
+        outputFolder->trigger();
+        QCOMPARE(QFileInfo(QSettings().value(QStringLiteral("edit/outputFolder")).toString()).canonicalFilePath(),
+            QFileInfo(dir.filePath(QStringLiteral("disc/media"))).canonicalFilePath());
+        QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void gameObjectAndRaceEditing()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QVERIFY(writeRaceInstall(dir.filePath(QStringLiteral("disc"))));
+        const QString output = dir.filePath(QStringLiteral("edited"));
+        QSettings().setValue(QStringLiteral("edit/outputFolder"), output);
+
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.openGameFolder(dir.filePath(QStringLiteral("disc"))));
+        QTableView* races = nullptr;
+        for (QTableView* table : window.findChildren<QTableView*>()) {
+            if (table->model()->headerData(0, Qt::Horizontal).toString() == QLatin1String("Event")) {
+                races = table;
+            }
+        }
+        QVERIFY(races != nullptr);
+        QTRY_COMPARE(races->model()->rowCount(), 1);
+        races->selectionModel()->select(
+            races->model()->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        actions[QStringLiteral("Edit on Map")]->setChecked(true);
+        auto* view = window.findChild<MapView*>();
+        QVERIFY(view != nullptr);
+
+        // Dragging the race start 40 m north takes its node along. With no
+        // map image a scene unit is a metre, Z pointing up the screen.
+        const QPoint from = view->mapFromScene(QPointF(50.0, 0.0));
+        const QPoint to = view->mapFromScene(QPointF(50.0, -40.0));
+        QTest::mousePress(view->viewport(), Qt::LeftButton, {}, from);
+        QTest::mouseMove(view->viewport(), (from + to) / 2);
+        QTest::mouseMove(view->viewport(), to);
+        QTest::mouseRelease(view->viewport(), Qt::LeftButton, {}, to);
+
+        // Clicking the flyer selects it, and Delete deletes it alone; the
+        // selected object goes before the selected race.
+        QAction* remove = actions[QStringLiteral("Delete")];
+        QAction* removeGroup = actions[QStringLiteral("Delete with Related Objects")];
+        QVERIFY(remove != nullptr && removeGroup != nullptr);
+        QCOMPARE(remove->shortcut(), QKeySequence(QKeySequence::Delete));
+        QVERIFY(!removeGroup->isEnabled());
+        const QPoint flyer = view->mapFromScene(QPointF(-50.0, 0.0));
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, flyer);
+        QVERIFY(remove->isEnabled());
+        // A flyer has no group.
+        QVERIFY(!removeGroup->isEnabled());
+        remove->trigger();
+        QCOMPARE(races->model()->rowCount(), 1);
+        QVERIFY(window.findChild<QDialog*>() == nullptr);
+
+        // Race settings go through their dialog.
+        actions[QStringLiteral("Race Settings…")]->trigger();
+        QTRY_VERIFY(window.findChild<QDialog*>() != nullptr && window.findChild<QDialog*>()->isVisible());
+        QDialog* settings = window.findChild<QDialog*>();
+        const QList<QSpinBox*> spins = settings->findChildren<QSpinBox*>();
+        QVERIFY(spins.size() >= 3);
+        spins[0]->setValue(4);
+        settings->accept();
+        QVERIFY(races->model()->data(races->model()->index(0, 0)).toString().endsWith(QLatin1String(" *")));
+
+        actions[QStringLiteral("Save Edits")]->trigger();
+        QVERIFY(!window.isWindowModified());
+        QFile objects(output + QStringLiteral("/tracks/testbed/Ribbon_00/GameObjs.xml"));
+        QVERIFY(objects.open(QIODevice::ReadOnly));
+        const fh1::GameObjectsFile saved = fh1::readGameObjects(objects.readAll(), {});
+        QCOMPARE(saved.objects.size(), std::size_t{2});
+        QCOMPARE(saved.objects[1].element, QStringLiteral("Obj1"));
+        QCOMPARE(saved.objects[1].gameplayId, QStringLiteral("FR98_NODE"));
+        const QVector3D start = saved.objects[0].position;
+        const QVector3D node = saved.objects[1].position;
+        QVERIFY2(std::abs(start.z() - 40.0F) < 3.0F, qPrintable(QString::number(start.z())));
+        // The node kept its place beside the start.
+        QVERIFY(std::abs(node.x() - start.x() - 10.0F) < 0.01F && std::abs(node.z() - start.z()) < 0.01F);
+
+        const QString connection = QStringLiteral("saved-gamedb");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(output + QStringLiteral("/db/gamedb.slt"));
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral("SELECT NumLaps FROM Races WHERE Id = 1")) && query.next());
+            QCOMPARE(query.value(0).toInt(), 4);
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void deletingARaceEvent()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QVERIFY(writeRaceInstall(
+            dir.filePath(QStringLiteral("disc")), {{"FR99", 50}, {"FR99_NODE", 60}, {"flyer_001", -50}}));
+        const QString output = dir.filePath(QStringLiteral("edited"));
+        QSettings().setValue(QStringLiteral("edit/outputFolder"), output);
+
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.openGameFolder(dir.filePath(QStringLiteral("disc"))));
+        QTableView* races = nullptr;
+        for (QTableView* table : window.findChildren<QTableView*>()) {
+            if (table->model()->headerData(0, Qt::Horizontal).toString() == QLatin1String("Event")) {
+                races = table;
+            }
+        }
+        QVERIFY(races != nullptr);
+        QTRY_COMPARE(races->model()->rowCount(), 1);
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        QAction* deleteEvent = actions[QStringLiteral("Delete Race Event…\tDel")];
+        QVERIFY(deleteEvent != nullptr);
+        QVERIFY(!deleteEvent->isEnabled());
+        QVERIFY(!actions[QStringLiteral("Delete")]->isEnabled());
+        races->selectionModel()->select(
+            races->model()->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        QVERIFY(deleteEvent->isEnabled());
+
+        // Delete in the Events list asks what to delete, everything ticked at
+        // first: the event's two objects and its rows.
+        // The key goes through the window, as a real key press does, so
+        // that shortcuts see it.
+        window.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&window));
+        races->setFocus();
+        QTest::keyClick(window.windowHandle(), Qt::Key_Delete);
+        QTRY_VERIFY(window.findChild<QDialog*>() != nullptr && window.findChild<QDialog*>()->isVisible());
+        QDialog* dialog = window.findChild<QDialog*>();
+        const QList<QCheckBox*> boxes = dialog->findChildren<QCheckBox*>();
+        QCOMPARE(boxes.size(), 2);
+        for (const QCheckBox* box : boxes) {
+            QVERIFY(box->isChecked() && box->isEnabled());
+        }
+        QVERIFY(boxes[0]->text().contains(QLatin1String("FR99_NODE")));
+        QVERIFY(boxes[1]->text().contains(QLatin1String("race 1")));
+        dialog->accept();
+        QCOMPARE(races->model()->rowCount(), 0);
+
+        // The history names both edits, each under its file.
+        auto* history = window.findChild<EditHistoryPanel*>();
+        QVERIFY(history != nullptr);
+        auto* tree = history->findChild<QTreeWidget*>();
+        QVERIFY(tree != nullptr);
+        QCOMPARE(tree->topLevelItemCount(), 2);
+        QStringList edits;
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            QCOMPARE(tree->topLevelItem(i)->childCount(), 1);
+            edits.append(tree->topLevelItem(i)->child(0)->text(0));
+        }
+        edits.sort();
+        QCOMPARE(edits,
+            (QStringList{QStringLiteral("Delete FR99 and 1 related object(s)"), QStringLiteral("Delete event FR99")}));
+
+        actions[QStringLiteral("Save Edits")]->trigger();
+        QFile objects(output + QStringLiteral("/tracks/testbed/Ribbon_00/GameObjs.xml"));
+        QVERIFY(objects.open(QIODevice::ReadOnly));
+        const fh1::GameObjectsFile saved = fh1::readGameObjects(objects.readAll(), {});
+        QCOMPARE(saved.objects.size(), std::size_t{1});
+        QCOMPARE(saved.objects[0].gameplayId, QStringLiteral("flyer_001"));
+        const QString connection = QStringLiteral("deleted-event");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(output + QStringLiteral("/db/gamedb.slt"));
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            for (const QString& table : {QStringLiteral("Events"), QStringLiteral("Races")}) {
+                QVERIFY(query.exec(QStringLiteral("SELECT count(*) FROM %1").arg(table)) && query.next());
+                QCOMPARE(query.value(0).toInt(), 0);
+            }
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        QSettings().remove(QStringLiteral("edit/outputFolder"));
     }
 
     void pointBoundsCoverEveryPoint()

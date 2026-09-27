@@ -10,7 +10,9 @@
 
 #include <QFutureWatcher>
 #include <QMainWindow>
+#include <QPixmap>
 #include <QPointer>
+#include <QSet>
 
 #include <array>
 #include <atomic>
@@ -23,6 +25,7 @@ class FeatureTableModel;
 class LayerItem;
 class MapView;
 class RaceTableModel;
+class EditSession;
 class WorldDebugPanel;
 class WorldView3D;
 class QAction;
@@ -96,6 +99,12 @@ private:
     /// Which of the props the game only puts out for events the 3D world
     /// draws.
     enum class EventProps { None, SelectedRace, AllEvents };
+    /// The gameplay objects and their map features, as one edit changes
+    /// them together.
+    struct GameObjectsState {
+        fh1::GameObjectsFile file;
+        std::vector<fh1::Feature> features;
+    };
 
     void createActions();
     void createDocks();
@@ -131,6 +140,69 @@ private:
     void clearRace();
     /// Takes the selected race's route off the map and out of the 3D world.
     void removeRaceOverlay();
+    /// Draws the selected race's route as it is now, on the map and in the
+    /// 3D world.
+    void showRaceOverlay();
+    /// Index into MapData::raceRoutes of the selected race's route, or -1.
+    int selectedRoute() const;
+    /// Turns editing on the map (route points and gameplay objects) on or
+    /// off.
+    void setMapEditing(bool editing);
+    /// Enables the editing actions for what is loaded and selected.
+    void updateEditActions();
+    /// The selected route's transform whose marker is at `scenePos`.
+    std::optional<std::size_t> routePointAt(const QPointF& scenePos) const;
+    /// The shown gameplay object at `scenePos`, as an index into both
+    /// MapData::gameObjects and the "gameobjs" layer.
+    std::optional<std::size_t> gameObjectAt(const QPointF& scenePos) const;
+    /// Index into MapData::layers of the gameplay objects, or -1.
+    int gameObjectsLayer() const;
+    void onGrabMoved(const QPointF& scenePos, Qt::KeyboardModifiers modifiers);
+    void onGrabReleased(const QPointF& scenePos, Qt::KeyboardModifiers modifiers);
+    /// Height of the ground at `x`, `z` from the 3D world, else from the
+    /// nearest road node; nothing when neither is known.
+    std::optional<float> groundHeightAt(float x, float z) const;
+    /// Registers the files the loaded track's edits are saved to.
+    void registerEditableFiles();
+    /// Records an edit made to route `route`, which was `before`.
+    void pushRouteEdit(int route, const fh1::RaceRoute& before, const QString& description);
+    /// Records an edit made to the gameplay objects, which were `before`,
+    /// and redraws them.
+    void pushGameObjectsEdit(const GameObjectsState& before, const QString& description);
+    void onRouteChanged(int route);
+    /// Copies gameplay object `index`'s position and heading to its feature.
+    void syncGameObjectFeature(std::size_t index);
+    /// Redraws the gameplay objects after they were edited, in the map,
+    /// the Objects panel and the 3D world.
+    void refreshGameObjects();
+    /// Deletes the gameplay objects `indices`; with `ask`, asks first when
+    /// an activity uses one of them.
+    void deleteGameObjects(const std::vector<std::size_t>& indices, bool ask = true);
+    /// Asks which of the selected race event's objects and database rows to
+    /// delete, then deletes them.
+    void deleteRaceEvent();
+    /// Adds deleting gameplay object `index`, alone and with its group, to
+    /// `menu`.
+    void addDeleteGameObjectActions(QMenu& menu, std::size_t index);
+    void onTableContextMenu(const QPoint& position);
+    /// The gameplay objects that belong with object `index`, not itself.
+    std::vector<std::size_t> relatedGameObjects(std::size_t index) const;
+    /// Rings the objects related to the selected gameplay object on the map.
+    void showRelatedGameObjects();
+    /// Selects gameplay object `index` and zooms the map to it and the
+    /// objects related to it.
+    void focusOnGameObjectGroup(std::size_t index);
+    void onLayerTreeContextMenu(const QPoint& position);
+    void onRaceTableContextMenu(const QPoint& position);
+    /// Deletes what is selected: a gameplay object, or in map editing a
+    /// checkpoint or waypoint of the selected race. With `withGroup`, a
+    /// gameplay object's group goes too.
+    void deleteSelection(bool withGroup);
+    /// Opens the settings of the selected race for editing.
+    void editRaceSettings();
+    void onEditsChanged();
+    /// Races whose route or settings have unsaved edits.
+    QSet<int> editedRaces() const;
     /// The pole position of the selected race, or nullptr.
     const fh1::RouteTransform* raceStart() const;
     void showRaceProperties();
@@ -238,6 +310,52 @@ private:
     std::shared_ptr<const fh1::MapData> m_raceOverlay;
     std::vector<LayerItem*> m_raceItems;
 
+    EditSession* m_edits = nullptr;
+    QAction* m_editMapAction = nullptr;
+    QAction* m_editRaceAction = nullptr;
+    QAction* m_saveEditsAction = nullptr;
+    QAction* m_outputFolderAction = nullptr;
+    /// Something on the map that a press can grab: a route point of the
+    /// selected race, or a gameplay object.
+    struct MapGrab {
+        bool routePoint = false;
+        /// Index into the route's transforms or the gameplay objects.
+        std::size_t index = 0;
+    };
+    /// A drag of a grabbed thing, with what it changes as it was before,
+    /// for undo.
+    struct MapDrag {
+        MapGrab grab;
+        std::optional<fh1::RaceRoute> routeBefore;
+        std::optional<GameObjectsState> objectsBefore;
+        /// The gameplay objects that move with the grabbed one, itself first.
+        std::vector<std::size_t> group;
+        bool moved = false;
+        bool turned = false;
+    };
+    std::optional<MapDrag> m_drag;
+    /// What is under the last press or hover on the map.
+    std::optional<MapGrab> m_grab;
+    /// The name of the selected race's route point clicked in map editing,
+    /// which Delete removes.
+    QString m_selectedRoutePoint;
+    QAction* m_deleteAction = nullptr;
+    QAction* m_deleteGroupAction = nullptr;
+    /// The races as loaded, to tell which settings were edited; kept in
+    /// step with MapData::races when races are deleted.
+    std::vector<fh1::Race> m_loadedRaces;
+    /// Races whose events are deleted from the database, as loaded.
+    std::vector<fh1::Race> m_deletedRaces;
+    /// The race lists as one edit of the database changes them together.
+    struct DatabaseState {
+        std::vector<fh1::Race> races;
+        std::vector<fh1::Race> loaded;
+        std::vector<fh1::Race> deleted;
+    };
+    QAction* m_deleteEventAction = nullptr;
+    /// Map icons at the size the map draws them, by fh1::Feature::icon.
+    QHash<QString, QPixmap> m_icons;
+
     QComboBox* m_trackCombo = nullptr;
     QLabel* m_cursorLabel = nullptr;
     QProgressBar* m_busy = nullptr;
@@ -258,6 +376,7 @@ private:
     QAction* m_clearCacheAction = nullptr;
 
     QDockWidget* m_debugDock = nullptr;
+    QDockWidget* m_historyDock = nullptr;
     WorldDebugPanel* m_debugPanel = nullptr;
     /// Coalesces the 3D view's frequent loading updates into a few refreshes
     /// per second.

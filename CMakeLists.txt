@@ -75,6 +75,10 @@ add_library(fh1viewer STATIC
     src/app/BackgroundItem.cpp
     src/app/BackgroundItem.h
     src/app/EntityRenderer.cpp
+    src/app/EditHistoryPanel.cpp
+    src/app/EditHistoryPanel.h
+    src/app/EditSession.cpp
+    src/app/EditSession.h
     src/app/EntityRenderer.h
     src/app/FeatureTableModel.cpp
     src/app/FeatureTableModel.h
