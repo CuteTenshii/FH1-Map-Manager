@@ -1,4 +1,5 @@
 #include "EditHistoryPanel.h"
+#include "EditSession.h"
 #include "FeatureTableModel.h"
 #include "GameObjects.h"
 #include "LayerItem.h"
@@ -525,6 +526,51 @@ private slots:
             db.close();
         }
         QSqlDatabase::removeDatabase(connection);
+        QSettings().remove(QStringLiteral("edit/outputFolder"));
+    }
+
+    void restoringOriginals()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString disc = dir.filePath(QStringLiteral("disc"));
+        QVERIFY(writeRaceInstall(disc));
+        const QString objectsPath = disc + QStringLiteral("/media/tracks/testbed/Ribbon_00/GameObjs.xml");
+        QFile original(objectsPath);
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        const QByteArray originalObjects = original.readAll();
+        original.close();
+        QDir(EditSession::backupFolder()).removeRecursively();
+        // Saving into the game folder itself backs up the original.
+        QSettings().setValue(QStringLiteral("edit/outputFolder"), disc);
+
+        MainWindow window;
+        window.resize(1200, 800);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.openGameFolder(disc));
+        auto* view = window.findChild<MapView*>();
+        QVERIFY(view != nullptr);
+        std::map<QString, QAction*> actions;
+        for (QAction* action : window.findChildren<QAction*>()) {
+            actions[action->text().remove(QLatin1Char('&'))] = action;
+        }
+        QTRY_VERIFY(actions[QStringLiteral("Edit on Map")]->isEnabled());
+        actions[QStringLiteral("Edit on Map")]->setChecked(true);
+        const QPoint flyer = view->mapFromScene(QPointF(-50.0, 0.0));
+        QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, flyer);
+        actions[QStringLiteral("Delete")]->trigger();
+        actions[QStringLiteral("Save Edits")]->trigger();
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QVERIFY(original.readAll() != originalObjects);
+        original.close();
+
+        answerNextMessageBox(QStringLiteral("Restore"));
+        answerNextMessageBox(QStringLiteral("No"));
+        actions[QStringLiteral("Restore Originals…")]->trigger();
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        QCOMPARE(original.readAll(), originalObjects);
+        QDir(EditSession::backupFolder()).removeRecursively();
         QSettings().remove(QStringLiteral("edit/outputFolder"));
     }
 

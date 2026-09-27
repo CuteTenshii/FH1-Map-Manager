@@ -27,6 +27,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -339,6 +340,10 @@ void MainWindow::createActions()
         }
     });
     m_outputFolderAction->setToolTip(tr("Choose where edits are saved: the game folder or another"));
+    m_restoreAction = fileMenu->addAction(tr("&Restore Originals…"), this, &MainWindow::restoreOriginals);
+    m_restoreAction->setToolTip(tr("Put back the game's original files that saving replaced"));
+    connect(fileMenu, &QMenu::aboutToShow, this,
+        [this] { m_restoreAction->setEnabled(!backedUpFiles().isEmpty() && !m_edits->outputFolder().isEmpty()); });
     fileMenu->addSeparator();
     m_clearCacheAction = fileMenu->addAction(tr("Clear &Cache…"), this, &MainWindow::clearCache);
     m_clearCacheAction->setToolTip(tr("Delete the 3D world indexes this viewer keeps between sessions"));
@@ -1485,6 +1490,66 @@ void MainWindow::editRaceSettings()
         apply(target);
     });
     dialog->open();
+}
+
+QStringList MainWindow::backedUpFiles() const
+{
+    QStringList files;
+    const QDir backups(EditSession::backupFolder());
+    QDirIterator it(backups.path(), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        files.append(backups.relativeFilePath(it.next()));
+    }
+    files.sort(Qt::CaseInsensitive);
+    return files;
+}
+
+void MainWindow::restoreOriginals()
+{
+    const QStringList files = backedUpFiles();
+    const QString output = m_edits->outputFolder();
+    if (files.isEmpty() || output.isEmpty()) {
+        statusBar()->showMessage(tr("No originals are backed up: a copy is kept only when saving replaces a game's "
+                                    "own file"),
+            8000);
+        return;
+    }
+    QMessageBox box(QMessageBox::Question, tr("Restore Originals"),
+        tr("Put back the original of %n file(s) in %1?", nullptr, static_cast<int>(files.size()))
+            .arg(QDir::toNativeSeparators(output)),
+        QMessageBox::Cancel, this);
+    box.setInformativeText(tr("The edits saved to them are lost. Edits not saved yet stay open."));
+    box.setDetailedText(files.join(QLatin1Char('\n')));
+    QPushButton* restoreButton = box.addButton(tr("Restore"), QMessageBox::DestructiveRole);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    if (box.clickedButton() != restoreButton) {
+        return;
+    }
+    QStringList failed;
+    bool restoredOpenGame = false;
+    const QDir backups(EditSession::backupFolder());
+    for (const QString& file : files) {
+        const QString target = fh1::routeOutputPath(output, file);
+        restoredOpenGame = restoredOpenGame
+            || QFileInfo(target).canonicalFilePath()
+                == QFileInfo(QDir(m_install.mediaPath()).filePath(file)).canonicalFilePath();
+        if ((QFileInfo::exists(target) && !QFile::remove(target)) || !QFile::copy(backups.filePath(file), target)) {
+            failed.append(file);
+        }
+    }
+    if (!failed.isEmpty()) {
+        reportError(tr("Restore Originals"), tr("Could not put back %1.").arg(failed.join(QStringLiteral(", "))));
+    }
+    statusBar()->showMessage(
+        tr("Put back %n original(s)", nullptr, static_cast<int>(files.size() - failed.size())), 8000);
+    // The open game shows the files as they were when it loaded.
+    if (restoredOpenGame && m_installOpen
+        && QMessageBox::question(this, tr("Restore Originals"),
+               tr("The originals are back in the game folder you opened. Reload %1 to show them?").arg(m_trackName))
+            == QMessageBox::Yes) {
+        loadTrack(m_trackName);
+    }
 }
 
 void MainWindow::deleteRaceEvent()

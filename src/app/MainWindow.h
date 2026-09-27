@@ -181,6 +181,11 @@ private:
     /// Asks which of the selected race event's objects and database rows to
     /// delete, then deletes them.
     void deleteRaceEvent();
+    /// Paths under the media folder of the originals kept in
+    /// EditSession::backupFolder().
+    QStringList backedUpFiles() const;
+    /// Puts the backed-up originals back in the output folder, after asking.
+    void restoreOriginals();
     /// Adds deleting gameplay object `index`, alone and with its group, to
     /// `menu`.
     void addDeleteGameObjectActions(QMenu& menu, std::size_t index);
@@ -353,6 +358,7 @@ private:
         std::vector<fh1::Race> deleted;
     };
     QAction* m_deleteEventAction = nullptr;
+    QAction* m_restoreAction = nullptr;
     /// Map icons at the size the map draws them, by fh1::Feature::icon.
     QHash<QString, QPixmap> m_icons;
 
