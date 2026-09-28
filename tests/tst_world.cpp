@@ -2456,9 +2456,57 @@ private slots:
         const QColor centre = image.pixelColor(32, 32);
         QVERIFY2(centre.red() > 2 * centre.green() && centre.red() > 2 * centre.blue(), qPrintable(centre.name()));
 
-        // Releasing the tile frees its texture.
+        // A new state of a drawn tile waits for its textures: the old one
+        // stays drawn meanwhile, and the tile counts as up to date.
+        fh1::TileMesh retextured = mesh;
+        for (fh1::TileMesh::Batch& batch : retextured.batches) {
+            if (batch.texture == 0x77) {
+                batch.texture = 0x78;
+            }
+        }
+        const int tile = requests[0].tile;
+        const int shownState = renderer.loadedState(tile);
+        renderer.upload(tile, shownState + 1, retextured);
+        QCOMPARE(renderer.loadedState(tile), shownState);
+        QVERIFY(!renderer.isComplete(camera));
+        QCOMPARE(renderer.takeTextureRequests(), (std::vector<std::uint32_t>{0x78}));
+        renderer.uploadTexture(0x78, *chain);
+        QCOMPARE(renderer.loadedState(tile), shownState + 1);
+        // No tile uses 0x77 now, but it stays loaded, so going back to it
+        // is immediate.
+        renderer.upload(tile, shownState, mesh);
+        QCOMPARE(renderer.loadedState(tile), shownState);
+        QVERIFY(renderer.takeTextureRequests().empty());
+        // A texture that fails lets the new state through as well.
+        fh1::TileMesh missing = mesh;
+        for (fh1::TileMesh::Batch& batch : missing.batches) {
+            if (batch.texture == 0x77) {
+                batch.texture = 0x79;
+            }
+        }
+        renderer.upload(tile, shownState + 2, missing);
+        QCOMPARE(renderer.loadedState(tile), shownState);
+        QCOMPARE(renderer.takeTextureRequests(), (std::vector<std::uint32_t>{0x79}));
+        renderer.failTexture(0x79, QStringLiteral("not in the archive"));
+        QCOMPARE(renderer.loadedState(tile), shownState + 2);
+
+        // When the tile goes, its loaded textures are kept, not freed.
+        WorldCamera far = camera;
+        far.position = QVector3D(1e6F, 50.0F, 1e6F);
+        QVERIFY(renderer.evictDistant(far));
+        QCOMPARE(renderer.loadedState(tile), -1);
+        QCOMPARE(renderer.textureStats().loaded, 0);
+        QCOMPARE(renderer.textureStats().cached, 2);
+        renderer.upload(tile, shownState, mesh);
+        QVERIFY(renderer.takeTextureRequests().empty());
+        QVERIFY(!renderer.texturesPending());
+        QCOMPARE(renderer.textureStats().loaded, 1);
+        QCOMPARE(renderer.textureStats().cached, 1);
+
+        // Releasing the grid frees every texture.
         renderer.setGrid(nullptr);
         QCOMPARE(renderer.textureStats().loaded, 0);
+        QCOMPARE(renderer.textureStats().cached, 0);
         renderer.release();
     }
 };

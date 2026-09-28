@@ -573,6 +573,10 @@ void WorldView3D::drawOverlay(const WorldRenderer::Stats& stats)
             if (textures.failed > 0) {
                 line += tr(", %n missing", nullptr, textures.failed);
             }
+            if (textures.cached > 0) {
+                line += tr(", %1 MB kept for reuse")
+                            .arg(static_cast<double>(textures.cachedBytes) / (1024.0 * 1024.0), 0, 'f', 0);
+            }
             lines << line;
         } else {
             lines << tr("No texture tables for this track, so nothing is textured");

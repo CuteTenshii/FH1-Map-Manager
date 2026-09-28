@@ -9,7 +9,9 @@
 #include <QVector3D>
 
 #include <array>
+#include <list>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -51,6 +53,9 @@ public:
         int pending = 0;
         int failed = 0;
         qint64 bytes = 0;
+        /// Loaded textures no tile uses any more, kept for reuse.
+        int cached = 0;
+        qint64 cachedBytes = 0;
     };
 
     WorldRenderer();
@@ -91,7 +96,9 @@ public:
     std::vector<TileRequest> requests(const WorldCamera& camera, const std::vector<int>& inFlightState) const;
     /// Replaces a tile's buffers. Only OpenGL work; the mesh is built elsewhere.
     /// Textures the mesh uses that are not loaded yet are queued, see
-    /// takeTextureRequests().
+    /// takeTextureRequests(). A tile already drawn keeps being drawn as it
+    /// was until those textures are loaded or have failed, so a change of
+    /// detail never shows untextured geometry.
     void upload(int tile, int state, const fh1::TileMesh& mesh);
 
     /// Texture ids that loaded tiles use and nobody has been asked to load
@@ -134,6 +141,7 @@ public:
     float fogDistance(const WorldCamera& camera) const { return reach(camera) * kFogFraction; }
     qint64 uploadedTriangles() const { return m_uploadedTriangles; }
     int tileCount() const { return static_cast<int>(m_tiles.size()); }
+    /// The state of `tile` that is drawn, or -1.
     int loadedState(int tile) const { return m_tiles[static_cast<std::size_t>(tile)].state; }
     /// Marks `tile` for building again, after the grid changed its chunks.
     /// Its current mesh stays drawn until the new one is uploaded.
@@ -162,8 +170,11 @@ private:
     struct GpuTexture {
         enum class State { Queued, Requested, Ready, Failed };
         GLuint name = 0;
-        /// Loaded tiles whose batches use the texture.
+        /// Loaded tiles whose batches use the texture, drawn or waiting.
         int users = 0;
+        /// Set while no tile uses the loaded texture: its place in
+        /// m_unusedTextures.
+        std::optional<std::list<std::uint32_t>::iterator> unused;
         State state = State::Queued;
         qint64 bytes = 0;
         /// What was uploaded, for loadedTextures().
@@ -177,6 +188,19 @@ private:
     };
 
     void releaseTile(GpuTile& tile);
+    /// Fills `gpu`, which must be empty, with `mesh`'s buffers.
+    void fillTile(GpuTile& gpu, int state, const fh1::TileMesh& mesh);
+    /// True when every texture `tile` uses is loaded or has failed.
+    bool texturesSettled(const GpuTile& tile) const;
+    /// Draws the waiting state of `tile` instead of the current one, if
+    /// there is one and nothing is lost by it: the tile had nothing drawn,
+    /// or the textures of the waiting state are settled.
+    void promoteIfReady(std::size_t tile);
+    /// True when the tile's newest state, waiting or drawn, is `state` and
+    /// its chunks have not changed since.
+    bool holdsState(std::size_t tile, int state) const;
+    /// Frees the least recently used unused textures beyond the budget.
+    void trimTextureCache();
     /// The three passes of draw(): everything but backdrop and water, the
     /// backdrop terrain, then water blended over both.
     enum class Pass { Foreground, Backdrop, Water };
@@ -192,12 +216,19 @@ private:
     QMatrix4x4 viewProjection(const WorldCamera& camera, QSize viewport) const;
 
     const fh1::WorldTileGrid* m_grid = nullptr;
+    /// Per tile: the state drawn, and the newer one waiting for its
+    /// textures (state -1 when there is none).
     std::vector<GpuTile> m_tiles;
+    std::vector<GpuTile> m_waitingTiles;
     qint64 m_uploadedTriangles = 0;
     float m_viewDistance = 9000.0F;
     float m_nearPlane = 1.0F;
 
     std::unordered_map<std::uint32_t, GpuTexture> m_textures;
+    /// Loaded textures no tile uses, least recently used first, and the
+    /// video memory they hold.
+    std::list<std::uint32_t> m_unusedTextures;
+    qint64 m_unusedTextureBytes = 0;
     bool m_compressedTextures = false;
     float m_maxAnisotropy = 1.0F;
 

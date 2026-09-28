@@ -24,6 +24,10 @@ constexpr float kReachPerClearance = 2.0F;
 /// The near plane moves out with the clearance, by this fraction of it, to
 /// keep depth precise when the far plane is kilometres away.
 constexpr float kNearPlanePerClearance = 0.02F;
+/// Video memory kept for loaded textures no tile uses any more, so tiles
+/// that come back into view, or back to a level of detail, find them
+/// loaded.
+constexpr qint64 kUnusedTextureBudget = qint64{256} * 1024 * 1024;
 
 const char* const kVertexShader = R"(#version 330 core
 layout(location = 0) in vec3 aPosition;
@@ -260,10 +264,15 @@ void WorldRenderer::release()
     for (GpuTile& tile : m_tiles) {
         releaseTile(tile);
     }
+    for (GpuTile& tile : m_waitingTiles) {
+        releaseTile(tile);
+    }
     for (auto& [id, texture] : m_textures) {
         deleteTexture(texture);
     }
     m_textures.clear();
+    m_unusedTextures.clear();
+    m_unusedTextureBytes = 0;
     m_program.reset();
     m_uploadedTriangles = 0;
     m_initialized = false;
@@ -275,6 +284,9 @@ void WorldRenderer::setGrid(const fh1::WorldTileGrid* grid)
         for (GpuTile& tile : m_tiles) {
             releaseTile(tile);
         }
+        for (GpuTile& tile : m_waitingTiles) {
+            releaseTile(tile);
+        }
         for (auto& [id, texture] : m_textures) {
             deleteTexture(texture);
         }
@@ -282,8 +294,11 @@ void WorldRenderer::setGrid(const fh1::WorldTileGrid* grid)
     // Without a context there are no OpenGL names left to free: release()
     // already freed them.
     m_textures.clear();
+    m_unusedTextures.clear();
+    m_unusedTextureBytes = 0;
     m_grid = grid;
     m_tiles.assign(grid != nullptr ? grid->tiles().size() : 0, GpuTile{});
+    m_waitingTiles.assign(m_tiles.size(), GpuTile{});
     m_uploadedTriangles = 0;
 }
 
@@ -305,18 +320,43 @@ void WorldRenderer::releaseTile(GpuTile& tile)
 
 void WorldRenderer::addTextureUser(std::uint32_t id)
 {
-    ++m_textures[id].users;
+    GpuTexture& texture = m_textures[id];
+    if (texture.unused) {
+        m_unusedTextures.erase(*texture.unused);
+        texture.unused.reset();
+        m_unusedTextureBytes -= texture.bytes;
+    }
+    ++texture.users;
 }
 
 void WorldRenderer::removeTextureUser(std::uint32_t id)
 {
     const auto it = m_textures.find(id);
-    if (it == m_textures.end()) {
+    if (it == m_textures.end() || --it->second.users > 0) {
         return;
     }
-    if (--it->second.users <= 0) {
-        // A texture still being loaded is dropped too; uploadTexture()
-        // ignores results nobody waits for.
+    GpuTexture& texture = it->second;
+    if (texture.state == GpuTexture::State::Ready) {
+        texture.unused = m_unusedTextures.insert(m_unusedTextures.end(), id);
+        m_unusedTextureBytes += texture.bytes;
+        trimTextureCache();
+        return;
+    }
+    // A texture still being loaded is dropped; uploadTexture() ignores
+    // results nobody waits for. A failed one is tried again if needed.
+    deleteTexture(texture);
+    m_textures.erase(it);
+}
+
+void WorldRenderer::trimTextureCache()
+{
+    while (m_unusedTextureBytes > kUnusedTextureBudget && !m_unusedTextures.empty()) {
+        const auto it = m_textures.find(m_unusedTextures.front());
+        m_unusedTextures.pop_front();
+        if (it == m_textures.end()) {
+            continue;
+        }
+        m_unusedTextureBytes -= it->second.bytes;
         deleteTexture(it->second);
         m_textures.erase(it);
     }
@@ -394,14 +434,21 @@ void WorldRenderer::uploadTexture(std::uint32_t id, const fh1::TextureMipChain& 
     texture.origin = chain.origin;
     texture.files = chain.files;
     texture.error.clear();
+    for (std::size_t tile = 0; tile < m_waitingTiles.size(); ++tile) {
+        promoteIfReady(tile);
+    }
 }
 
 void WorldRenderer::failTexture(std::uint32_t id, const QString& error)
 {
     const auto it = m_textures.find(id);
-    if (it != m_textures.end()) {
-        it->second.state = GpuTexture::State::Failed;
-        it->second.error = error;
+    if (it == m_textures.end()) {
+        return;
+    }
+    it->second.state = GpuTexture::State::Failed;
+    it->second.error = error;
+    for (std::size_t tile = 0; tile < m_waitingTiles.size(); ++tile) {
+        promoteIfReady(tile);
     }
 }
 
@@ -421,6 +468,9 @@ std::vector<LoadedTexture> WorldRenderer::loadedTextures() const
     std::vector<LoadedTexture> textures;
     textures.reserve(m_textures.size());
     for (const auto& [id, texture] : m_textures) {
+        if (texture.unused) {
+            continue;
+        }
         LoadedTexture loaded;
         loaded.id = id;
         switch (texture.state) {
@@ -455,6 +505,11 @@ WorldRenderer::TextureStats WorldRenderer::textureStats() const
 {
     TextureStats stats;
     for (const auto& [id, texture] : m_textures) {
+        if (texture.unused) {
+            ++stats.cached;
+            stats.cachedBytes += texture.bytes;
+            continue;
+        }
         switch (texture.state) {
         case GpuTexture::State::Queued:
         case GpuTexture::State::Requested:
@@ -523,7 +578,7 @@ std::vector<TileRequest> WorldRenderer::requests(const WorldCamera& camera, cons
         }
         const int state = m_grid->stateAt(tiles[i], distance);
         const int inFlight = i < inFlightState.size() ? inFlightState[i] : -1;
-        if ((m_tiles[i].state == state && !m_tiles[i].stale) || inFlight >= 0) {
+        if (holdsState(i, state) || inFlight >= 0) {
             continue;
         }
         result.push_back({static_cast<int>(i), state, distance, m_grid->chunksAt(tiles[i], distance)});
@@ -542,7 +597,8 @@ bool WorldRenderer::isComplete(const WorldCamera& camera) const
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
         const float distance = tileDistance(tiles[i], camera);
-        if (distance <= range && (m_tiles[i].state != m_grid->stateAt(tiles[i], distance) || m_tiles[i].stale)) {
+        if (distance <= range
+            && (!holdsState(i, m_grid->stateAt(tiles[i], distance)) || m_waitingTiles[i].state >= 0)) {
             return false;
         }
     }
@@ -551,10 +607,49 @@ bool WorldRenderer::isComplete(const WorldCamera& camera) const
 
 void WorldRenderer::invalidateTile(int tile)
 {
-    if (tile >= 0 && static_cast<std::size_t>(tile) < m_tiles.size()
-        && m_tiles[static_cast<std::size_t>(tile)].state >= 0) {
-        m_tiles[static_cast<std::size_t>(tile)].stale = true;
+    if (tile < 0 || static_cast<std::size_t>(tile) >= m_tiles.size()) {
+        return;
     }
+    const auto index = static_cast<std::size_t>(tile);
+    // A state waiting for its textures holds the old chunks too.
+    releaseTile(m_waitingTiles[index]);
+    if (m_tiles[index].state >= 0) {
+        m_tiles[index].stale = true;
+    }
+}
+
+bool WorldRenderer::holdsState(std::size_t tile, int state) const
+{
+    if (m_waitingTiles[tile].state >= 0) {
+        return m_waitingTiles[tile].state == state;
+    }
+    return m_tiles[tile].state == state && !m_tiles[tile].stale;
+}
+
+bool WorldRenderer::texturesSettled(const GpuTile& tile) const
+{
+    for (const fh1::TileMesh::Batch& batch : tile.batches) {
+        for (const std::uint32_t id : batch.textures()) {
+            const auto it = m_textures.find(id);
+            if (it != m_textures.end()
+                && (it->second.state == GpuTexture::State::Queued
+                    || it->second.state == GpuTexture::State::Requested)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void WorldRenderer::promoteIfReady(std::size_t tile)
+{
+    GpuTile& waiting = m_waitingTiles[tile];
+    if (waiting.state < 0 || (m_tiles[tile].state >= 0 && !texturesSettled(waiting))) {
+        return;
+    }
+    releaseTile(m_tiles[tile]);
+    m_tiles[tile] = std::move(waiting);
+    waiting = GpuTile{};
 }
 
 void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
@@ -569,8 +664,15 @@ void WorldRenderer::upload(int tile, int state, const fh1::TileMesh& mesh)
             addTextureUser(id);
         }
     }
-    GpuTile& gpu = m_tiles[static_cast<std::size_t>(tile)];
-    releaseTile(gpu);
+    const auto index = static_cast<std::size_t>(tile);
+    // A state that was already waiting gives way to this newer one.
+    releaseTile(m_waitingTiles[index]);
+    fillTile(m_waitingTiles[index], state, mesh);
+    promoteIfReady(index);
+}
+
+void WorldRenderer::fillTile(GpuTile& gpu, int state, const fh1::TileMesh& mesh)
+{
     gpu.state = state;
     gpu.stale = false;
     gpu.batches = mesh.batches;
@@ -620,7 +722,8 @@ bool WorldRenderer::evictDistant(const WorldCamera& camera)
     const float range = reach(camera) * kEvictMargin;
     const auto& tiles = m_grid->tiles();
     for (std::size_t i = 0; i < tiles.size(); ++i) {
-        if (m_tiles[i].state >= 0 && tileDistance(tiles[i], camera) > range) {
+        if ((m_tiles[i].state >= 0 || m_waitingTiles[i].state >= 0) && tileDistance(tiles[i], camera) > range) {
+            releaseTile(m_waitingTiles[i]);
             releaseTile(m_tiles[i]);
             evicted = true;
         }
