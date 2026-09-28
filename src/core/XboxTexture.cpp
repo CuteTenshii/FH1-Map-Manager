@@ -1,34 +1,25 @@
 #include "XboxTexture.h"
 
-#include <QPoint>
 #include <QtEndian>
+
+#include <xds/xds.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <utility>
 
 namespace fh1 {
 
 namespace {
 
-constexpr qsizetype kHeaderSize = 52;
-constexpr qsizetype kFetchConstantOffset = 0x1C;
 constexpr qsizetype kBixHeaderSize = 0x1C;
 constexpr int kMaxDimension = 8192;
-
-enum XenosFormat : quint32 {
-    k8888 = 6,
-    kDxt1 = 18,
-    kDxt23 = 19,
-    kDxt45 = 20,
-    k8888As16 = 50,
-    kDxt1As16 = 51,
-    kDxt23As16 = 52,
-    kDxt45As16 = 53,
-};
+/// Tiled surfaces are whole 32x32-block tiles wide.
+constexpr int kTileBlocks = 32;
 
 using dxt::Rgba;
 
@@ -65,11 +56,6 @@ Rgba mix(const Rgba& a, const Rgba& b, int wa, int wb)
     c.g = static_cast<std::uint8_t>((a.g * wa + b.g * wb) / total);
     c.b = static_cast<std::uint8_t>((a.b * wa + b.b * wb) / total);
     return c;
-}
-
-std::uint16_t le16(const std::uint8_t* p)
-{
-    return static_cast<std::uint16_t>(p[0] | (p[1] << 8));
 }
 
 void putLe16(std::uint8_t* p, std::uint16_t v)
@@ -109,42 +95,6 @@ std::array<int, 8> alphaPalette(int a0, int a1)
         palette[7] = 255;
     }
     return palette;
-}
-
-void decodeColour(const std::uint8_t* block, bool dxt1, Rgba* out)
-{
-    const auto palette = colourPalette(le16(block), le16(block + 2), dxt1);
-    const std::uint32_t bits = static_cast<std::uint32_t>(block[4]) | (static_cast<std::uint32_t>(block[5]) << 8)
-        | (static_cast<std::uint32_t>(block[6]) << 16) | (static_cast<std::uint32_t>(block[7]) << 24);
-    for (int i = 0; i < 16; ++i) {
-        const Rgba& colour = palette[(bits >> (2 * i)) & 3];
-        out[i].r = colour.r;
-        out[i].g = colour.g;
-        out[i].b = colour.b;
-        if (dxt1) {
-            out[i].a = colour.a;
-        }
-    }
-}
-
-void decodeExplicitAlpha(const std::uint8_t* block, Rgba* out)
-{
-    for (int i = 0; i < 16; ++i) {
-        const int nibble = (block[i / 2] >> ((i % 2) * 4)) & 15;
-        out[i].a = static_cast<std::uint8_t>(nibble * 17);
-    }
-}
-
-void decodeInterpolatedAlpha(const std::uint8_t* block, Rgba* out)
-{
-    const auto palette = alphaPalette(block[0], block[1]);
-    std::uint64_t bits = 0;
-    for (int i = 0; i < 6; ++i) {
-        bits |= static_cast<std::uint64_t>(block[2 + i]) << (8 * i);
-    }
-    for (int i = 0; i < 16; ++i) {
-        out[i].a = static_cast<std::uint8_t>(palette[(bits >> (3 * i)) & 7]);
-    }
 }
 
 int colourDistance(const Rgba& a, const Rgba& b)
@@ -318,6 +268,68 @@ void encodeAlpha(const Rgba* texels, std::uint8_t* block)
     }
 }
 
+std::span<const std::uint8_t> bytesOf(const QByteArray& data)
+{
+    return {reinterpret_cast<const std::uint8_t*>(data.constData()), static_cast<std::size_t>(data.size())};
+}
+
+bool isDxt1(std::uint32_t format)
+{
+    return format == static_cast<std::uint32_t>(xds::Format::kDxt1)
+        || format == static_cast<std::uint32_t>(xds::Format::kDxt1_As16_16_16_16);
+}
+
+bool isDxt3(std::uint32_t format)
+{
+    return format == static_cast<std::uint32_t>(xds::Format::kDxt2_3)
+        || format == static_cast<std::uint32_t>(xds::Format::kDxt2_3_As16_16_16_16);
+}
+
+bool isDxt5(std::uint32_t format)
+{
+    return format == static_cast<std::uint32_t>(xds::Format::kDxt4_5)
+        || format == static_cast<std::uint32_t>(xds::Format::kDxt4_5_As16_16_16_16);
+}
+
+bool is8888(std::uint32_t format)
+{
+    return format == static_cast<std::uint32_t>(xds::Format::k8_8_8_8)
+        || format == static_cast<std::uint32_t>(xds::Format::k8_8_8_8_As16_16_16_16);
+}
+
+/// The top level of `texture`: DXT blocks as they are, anything else (8_8_8_8,
+/// DXN, the single-channel formats) decoded to RGBA with the texture's
+/// swizzle.
+TextureSurface topLevelSurface(const xds::Texture& texture)
+{
+    const std::uint32_t format = texture.info().format;
+    TextureSurface surface;
+    surface.width = static_cast<int>(texture.info().width);
+    surface.height = static_cast<int>(texture.info().height);
+    if (isDxt1(format) || isDxt3(format) || isDxt5(format)) {
+        surface.format = isDxt1(format) ? TextureSurface::Format::Dxt1
+            : isDxt3(format)            ? TextureSurface::Format::Dxt3
+                                        : TextureSurface::Format::Dxt5;
+        const xds::Surface blocks = texture.extractLevel(0);
+        surface.data
+            = QByteArray(reinterpret_cast<const char*>(blocks.data.data()), static_cast<qsizetype>(blocks.data.size()));
+        return surface;
+    }
+    surface.format = TextureSurface::Format::Rgba8;
+    const xds::Image image = texture.decodeLevel(0);
+    surface.data
+        = QByteArray(reinterpret_cast<const char*>(image.rgba.data()), static_cast<qsizetype>(image.rgba.size()));
+    return surface;
+}
+
+QImage imageOf(const xds::Image& decoded)
+{
+    const QImage view(decoded.rgba.data(), static_cast<int>(decoded.width), static_cast<int>(decoded.height),
+        static_cast<qsizetype>(decoded.width) * 4, QImage::Format_RGBA8888);
+    // The view borrows the decoded pixels; the conversion copies them.
+    return view.convertToFormat(QImage::Format_ARGB32);
+}
+
 std::optional<BixHeader> parseBixHeader(const QByteArray& data)
 {
     if (data.size() < kBixHeaderSize || !data.startsWith("BIX1")) {
@@ -360,66 +372,7 @@ int TextureSurface::blocksHigh() const
     return isCompressed() ? (height + 3) / 4 : height;
 }
 
-namespace xenos {
-
-quint32 tiledOffset(quint32 x, quint32 y, quint32 pitchBlocks, quint32 log2Bytes)
-{
-    const quint32 macroOuter = ((y >> 5) * (pitchBlocks >> 5)) << (log2Bytes + 7);
-    const quint32 microOuter = ((y & 6) << 2) << log2Bytes;
-    const quint32 outer = macroOuter + ((microOuter & ~0xFu) << 1) + (microOuter & 0xFu) + ((y & 8) << (3 + log2Bytes))
-        + ((y & 1) << 4);
-    const quint32 macroInner = (x >> 5) << (log2Bytes + 7);
-    const quint32 microInner = (x & 7) << log2Bytes;
-    const quint32 offset = outer + macroInner + ((microInner & ~0xFu) << 1) + (microInner & 0xFu);
-    return ((offset & ~0x1FFu) << 3) + ((offset & 0x1C0u) << 2) + (offset & 0x3Fu) + ((y & 16) << 7)
-        + (((((y & 8) >> 2) + (x >> 3)) & 3) << 6);
-}
-
-QPoint packedBaseOffset(int width, int height, int blockSize)
-{
-    constexpr int kTailOffset = 16;
-    constexpr int kMaxPackedLog2 = 4;
-    const auto log2Ceil = [](int v) {
-        int log2 = 0;
-        while ((1 << log2) < v) {
-            ++log2;
-        }
-        return log2;
-    };
-    const int log2Width = log2Ceil(width);
-    const int log2Height = log2Ceil(height);
-    if (std::min(log2Width, log2Height) > kMaxPackedLog2) {
-        return {0, 0};
-    }
-    // The levels line up along the shorter axis, the first one 16 texels in.
-    return log2Width > log2Height ? QPoint(0, kTailOffset / blockSize) : QPoint(kTailOffset / blockSize, 0);
-}
-
-} // namespace xenos
-
 namespace dxt {
-
-void decodeBlock(TextureSurface::Format format, const std::uint8_t* block, Rgba* texels)
-{
-    for (int i = 0; i < 16; ++i) {
-        texels[i] = Rgba{};
-    }
-    switch (format) {
-    case TextureSurface::Format::Dxt1:
-        decodeColour(block, true, texels);
-        break;
-    case TextureSurface::Format::Dxt3:
-        decodeExplicitAlpha(block, texels);
-        decodeColour(block + 8, false, texels);
-        break;
-    case TextureSurface::Format::Dxt5:
-        decodeInterpolatedAlpha(block, texels);
-        decodeColour(block + 8, false, texels);
-        break;
-    case TextureSurface::Format::Rgba8:
-        break;
-    }
-}
 
 void encodeDxt1(const Rgba* texels, std::uint8_t* block)
 {
@@ -437,146 +390,77 @@ void encodeDxt5(const Rgba* texels, std::uint8_t* block)
 std::optional<TextureSurface> untileXboxSurface(
     const QByteArray& tiled, quint32 formatWord, int width, int height, MipLayout layout, QString* error)
 {
-    const quint32 format = formatWord & 0x3F;
-    const quint32 endian = (formatWord >> 6) & 3;
     if (width <= 0 || height <= 0 || width > kMaxDimension || height > kMaxDimension) {
         setError(error, QStringLiteral("invalid texture size %1x%2").arg(width).arg(height));
         return std::nullopt;
     }
-    TextureSurface surface;
-    surface.width = width;
-    surface.height = height;
-    switch (format) {
-    case kDxt1:
-    case kDxt1As16:
-        surface.format = TextureSurface::Format::Dxt1;
-        break;
-    case kDxt23:
-    case kDxt23As16:
-        surface.format = TextureSurface::Format::Dxt3;
-        break;
-    case kDxt45:
-    case kDxt45As16:
-        surface.format = TextureSurface::Format::Dxt5;
-        break;
-    case k8888:
-    case k8888As16:
-        surface.format = TextureSurface::Format::Rgba8;
-        break;
-    default:
-        setError(error, QStringLiteral("unsupported texture format %1").arg(format));
+    xds::TextureInfo info;
+    info.format = formatWord & 0x3F;
+    if (!xds::isFormatSupported(info.format)) {
+        setError(error,
+            QStringLiteral("unsupported texture format %1 (%2)")
+                .arg(info.format)
+                .arg(QString::fromLatin1(xds::formatName(info.format))));
         return std::nullopt;
     }
-
-    QByteArray swapped = tiled;
-    auto* bytes = reinterpret_cast<std::uint8_t*>(swapped.data());
-    const qsizetype size = swapped.size();
-    if (endian == 1 || endian == 3) {
-        for (qsizetype i = 0; i + 1 < size; i += 2) {
-            std::swap(bytes[i], bytes[i + 1]);
-        }
+    info.endian = static_cast<xds::Endian>((formatWord >> 6) & 3);
+    info.tiled = true;
+    info.packedMips = layout == MipLayout::Packed;
+    info.width = static_cast<std::uint32_t>(width);
+    info.height = static_cast<std::uint32_t>(height);
+    const std::uint32_t edge = xds::blockEdge(info.format);
+    const std::uint32_t blocksWide = (info.width + edge - 1) / edge;
+    info.pitch = (blocksWide + kTileBlocks - 1) / kTileBlocks * kTileBlocks * edge;
+    if (is8888(info.format)) {
+        // The containers carry no swizzle; their 8_8_8_8 texels are A, R, G,
+        // B in memory once swapped.
+        info.swizzle = {xds::Swizzle::Y, xds::Swizzle::Z, xds::Swizzle::W, xds::Swizzle::X};
     }
-    if (endian == 2 || endian == 3) {
-        for (qsizetype i = 0; i + 3 < size; i += 4) {
-            std::swap(bytes[i], bytes[i + 3]);
-            std::swap(bytes[i + 1], bytes[i + 2]);
-        }
+    try {
+        return topLevelSurface(xds::Texture::fromData(info, bytesOf(tiled)));
+    } catch (const xds::Error& e) {
+        setError(error, QString::fromUtf8(e.what()));
+        return std::nullopt;
     }
-
-    const int blockBytes = surface.blockBytes();
-    const int blocksWide = surface.blocksWide();
-    const int blocksHigh = surface.blocksHigh();
-    const auto pitch = static_cast<quint32>((blocksWide + 31) & ~31);
-    const quint32 log2Bytes = blockBytes == 16 ? 4 : (blockBytes == 8 ? 3 : 2);
-    const QPoint start = layout == MipLayout::Packed
-        ? xenos::packedBaseOffset(width, height, surface.isCompressed() ? 4 : 1)
-        : QPoint(0, 0);
-    surface.data.resize(static_cast<qsizetype>(blocksWide) * blocksHigh * blockBytes);
-    auto* out = reinterpret_cast<std::uint8_t*>(surface.data.data());
-    for (int by = 0; by < blocksHigh; ++by) {
-        for (int bx = 0; bx < blocksWide; ++bx) {
-            const auto offset = static_cast<qsizetype>(xenos::tiledOffset(
-                static_cast<quint32>(bx + start.x()), static_cast<quint32>(by + start.y()), pitch, log2Bytes));
-            if (offset + blockBytes > size) {
-                setError(error, QStringLiteral("texture data is truncated"));
-                return std::nullopt;
-            }
-            std::uint8_t* target = out + (static_cast<qsizetype>(by) * blocksWide + bx) * blockBytes;
-            const std::uint8_t* source = bytes + offset;
-            if (surface.format == TextureSurface::Format::Rgba8) {
-                // 8_8_8_8 texels are A, R, G, B in memory once swapped.
-                target[0] = source[1];
-                target[1] = source[2];
-                target[2] = source[3];
-                target[3] = source[0];
-            } else {
-                std::memcpy(target, source, static_cast<std::size_t>(blockBytes));
-            }
-        }
-    }
-    return surface;
 }
 
 QImage surfaceToImage(const TextureSurface& surface)
 {
-    if (surface.width <= 0 || surface.height <= 0) {
+    if (surface.width <= 0 || surface.height <= 0
+        || surface.data.size()
+            < static_cast<qsizetype>(surface.blocksWide()) * surface.blocksHigh() * surface.blockBytes()) {
         return {};
     }
-    const auto* bytes = reinterpret_cast<const std::uint8_t*>(surface.data.constData());
-    const int blockBytes = surface.blockBytes();
-    if (surface.data.size() < static_cast<qsizetype>(surface.blocksWide()) * surface.blocksHigh() * blockBytes) {
-        return {};
-    }
-    QImage image(surface.width, surface.height, QImage::Format_ARGB32);
     if (!surface.isCompressed()) {
-        for (int y = 0; y < surface.height; ++y) {
-            auto* line = reinterpret_cast<QRgb*>(image.scanLine(y));
-            const std::uint8_t* texel = bytes + static_cast<qsizetype>(y) * surface.width * 4;
-            for (int x = 0; x < surface.width; ++x, texel += 4) {
-                line[x] = qRgba(texel[0], texel[1], texel[2], texel[3]);
-            }
-        }
-        return image;
+        const QImage view(reinterpret_cast<const uchar*>(surface.data.constData()), surface.width, surface.height,
+            static_cast<qsizetype>(surface.width) * 4, QImage::Format_RGBA8888);
+        return view.convertToFormat(QImage::Format_ARGB32);
     }
-    std::array<Rgba, 16> texels{};
-    for (int by = 0; by < surface.blocksHigh(); ++by) {
-        for (int bx = 0; bx < surface.blocksWide(); ++bx) {
-            dxt::decodeBlock(surface.format,
-                bytes + (static_cast<qsizetype>(by) * surface.blocksWide() + bx) * blockBytes, texels.data());
-            for (int i = 0; i < 16; ++i) {
-                const int x = bx * 4 + i % 4;
-                const int y = by * 4 + i / 4;
-                if (x < surface.width && y < surface.height) {
-                    const Rgba& c = texels[static_cast<std::size_t>(i)];
-                    image.setPixel(x, y, qRgba(c.r, c.g, c.b, c.a));
-                }
-            }
-        }
+    // The blocks as a linear texture in PC byte order, for xds to decode.
+    xds::TextureInfo info;
+    info.format = static_cast<std::uint32_t>(surface.format == TextureSurface::Format::Dxt1 ? xds::Format::kDxt1
+            : surface.format == TextureSurface::Format::Dxt3                                ? xds::Format::kDxt2_3
+                                                                                            : xds::Format::kDxt4_5);
+    info.endian = xds::Endian::None;
+    info.tiled = false;
+    info.width = static_cast<std::uint32_t>(surface.width);
+    info.height = static_cast<std::uint32_t>(surface.height);
+    info.pitch = static_cast<std::uint32_t>(surface.blocksWide()) * 4;
+    try {
+        return imageOf(xds::Texture::fromData(info, bytesOf(surface.data)).decodeLevel(0));
+    } catch (const xds::Error&) {
+        return {};
     }
-    return image;
 }
 
 QImage decodeXboxTexture(const QByteArray& data, QString* error)
 {
-    if (data.size() < kHeaderSize) {
-        setError(error, QStringLiteral("texture file is too small"));
+    try {
+        return imageOf(xds::Texture::parse(bytesOf(data)).decodeLevel(0));
+    } catch (const xds::Error& e) {
+        setError(error, QString::fromUtf8(e.what()));
         return {};
     }
-    const char* fetch = data.constData() + kFetchConstantOffset;
-    const auto word0 = qFromBigEndian<quint32>(fetch);
-    const auto word1 = qFromBigEndian<quint32>(fetch + 4);
-    const auto word2 = qFromBigEndian<quint32>(fetch + 8);
-    if ((word0 >> 31) == 0) {
-        // Every texture seen on the disc is tiled; the row alignment of linear
-        // textures has not been confirmed, so they are rejected, not guessed.
-        setError(error, QStringLiteral("linear (untiled) textures are not supported"));
-        return {};
-    }
-    const int width = static_cast<int>((word2 & 0x1FFF) + 1);
-    const int height = static_cast<int>(((word2 >> 13) & 0x1FFF) + 1);
-    const std::optional<TextureSurface> surface
-        = untileXboxSurface(data.mid(kHeaderSize), word1, width, height, MipLayout::Unpacked, error);
-    return surface ? surfaceToImage(*surface) : QImage();
 }
 
 std::optional<BixHeader> readBixHeader(const QByteArray& data)

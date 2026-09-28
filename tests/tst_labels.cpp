@@ -4,9 +4,10 @@
 #include "XboxTexture.h"
 
 #include <QPainter>
-#include <QSet>
 #include <QTest>
 #include <QtEndian>
+
+#include <xds/xds.h>
 
 namespace {
 
@@ -61,12 +62,14 @@ QByteArray textureHeader(quint32 format, int width, int height)
     }
     appendBe32(data, 0xFFFF0000);
     appendBe32(data, 0xFFFF0000);
-    appendBe32(data, 0x80000002);
+    // Tiled, one 32-block tile wide; 8-in-16 byte order; 2D; swizzle XYZW.
+    const quint32 pitch = 32 * (xds::isFormatSupported(format) ? xds::blockEdge(format) : 1);
+    appendBe32(data, 0x80000002u | ((pitch >> 5) << 22));
     appendBe32(data, (1u << 6) | format);
     appendBe32(data, static_cast<quint32>(width - 1) | (static_cast<quint32>(height - 1) << 13));
-    for (int i = 0; i < 3; ++i) {
-        appendBe32(data, 0);
-    }
+    appendBe32(data, 0x688u << 1);
+    appendBe32(data, 0);
+    appendBe32(data, 1u << 9);
     return data;
 }
 
@@ -117,21 +120,6 @@ private slots:
         QVERIFY(!fh1::StringTables::referenceKey(QStringLiteral("_&abc")).has_value());
     }
 
-    void tilingIsAPermutation()
-    {
-        // Every block of a 32x32-block tile must land on its own slot.
-        QSet<quint32> offsets;
-        for (quint32 y = 0; y < 32; ++y) {
-            for (quint32 x = 0; x < 32; ++x) {
-                const quint32 offset = fh1::xenos::tiledOffset(x, y, 32, 3);
-                QVERIFY(offset < 32 * 32 * 8);
-                QCOMPARE(offset % 8, 0u);
-                offsets.insert(offset);
-            }
-        }
-        QCOMPARE(offsets.size(), 32 * 32);
-    }
-
     void decodesTiledDxt1()
     {
         // 8x8 texels = 2x2 blocks in a 32-block-wide tiled surface. Each block
@@ -140,7 +128,7 @@ private slots:
         QByteArray texels(qsizetype{32} * 32 * 8, '\0');
         for (quint32 by = 0; by < 2; ++by) {
             for (quint32 bx = 0; bx < 2; ++bx) {
-                const quint32 offset = fh1::xenos::tiledOffset(bx, by, 32, 3);
+                const quint32 offset = xds::tiledOffset2D(bx, by, 32, 3);
                 texels.replace(static_cast<qsizetype>(offset), 8, solidDxt1Block(colours[by * 2 + bx]));
             }
         }

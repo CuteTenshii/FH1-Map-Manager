@@ -38,6 +38,8 @@ constexpr int kMaxBundleDimension = 4096;
 constexpr std::size_t kCachedPacks = 8;
 
 using dxt::Rgba;
+// Texels are copied to and from RGBA8 bytes as they are.
+static_assert(sizeof(Rgba) == 4);
 
 void setError(QString* error, const QString& message)
 {
@@ -54,27 +56,13 @@ std::uint32_t u32At(const QByteArray& data, qsizetype offset)
 std::vector<Rgba> decodeTexels(const TextureSurface& surface)
 {
     std::vector<Rgba> texels(static_cast<std::size_t>(surface.width) * static_cast<std::size_t>(surface.height));
-    const auto* bytes = reinterpret_cast<const std::uint8_t*>(surface.data.constData());
-    if (!surface.isCompressed()) {
-        for (std::size_t i = 0; i < texels.size(); ++i) {
-            texels[i] = Rgba{bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]};
-        }
+    const QImage image = surfaceToImage(surface).convertToFormat(QImage::Format_RGBA8888);
+    if (image.isNull()) {
         return texels;
     }
-    std::array<Rgba, 16> block{};
-    for (int by = 0; by < surface.blocksHigh(); ++by) {
-        for (int bx = 0; bx < surface.blocksWide(); ++bx) {
-            dxt::decodeBlock(surface.format,
-                bytes + (static_cast<qsizetype>(by) * surface.blocksWide() + bx) * surface.blockBytes(), block.data());
-            for (int i = 0; i < 16; ++i) {
-                const int x = bx * 4 + i % 4;
-                const int y = by * 4 + i / 4;
-                if (x < surface.width && y < surface.height) {
-                    texels[static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width)
-                        + static_cast<std::size_t>(x)] = block[static_cast<std::size_t>(i)];
-                }
-            }
-        }
+    for (int y = 0; y < surface.height; ++y) {
+        std::memcpy(texels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(surface.width),
+            image.constScanLine(y), static_cast<std::size_t>(surface.width) * sizeof(Rgba));
     }
     return texels;
 }

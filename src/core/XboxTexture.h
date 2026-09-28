@@ -2,7 +2,6 @@
 
 #include <QByteArray>
 #include <QImage>
-#include <QPoint>
 #include <QString>
 
 #include <cstdint>
@@ -20,7 +19,8 @@ struct TextureSurface {
         Dxt3,
         /// 16-byte blocks; interpolated alpha.
         Dxt5,
-        /// 4 bytes per texel: R, G, B, A.
+        /// 4 bytes per texel: R, G, B, A. Also what formats without a PC
+        /// counterpart here (DXN, DXT3A, DXT5A) are decoded to.
         Rgba8,
     };
 
@@ -41,24 +41,24 @@ enum class MipLayout {
     /// At the origin.
     Unpacked,
     /// In the packed mip tail when the texture is 16 texels or less on its
-    /// shorter side (see xenos::packedBaseOffset()); at the origin otherwise.
+    /// shorter side; at the origin otherwise.
     Packed,
 };
 
-/// Untiles the top mip level of Xbox 360 GPU texture data. `formatWord` is
-/// the second dword of the GPU fetch constant: format in bits 0-5 (DXT1,
-/// DXT2/3, DXT4/5, their AS_16_16_16_16 variants, and 8_8_8_8), byte order in
-/// bits 6-7 (8-in-16 and 8-in-32 swaps). Returns nothing and sets `error` for
-/// other formats or truncated data.
+/// Untiles the top mip level of Xbox 360 GPU texture data with the xds
+/// library. `formatWord` is the second dword of the GPU fetch constant:
+/// format in bits 0-5, byte order in bits 6-7. DXT1, DXT2/3 and DXT4/5 keep
+/// their blocks; 8_8_8_8, DXN, DXT3A and DXT5A are decoded to Rgba8. Returns
+/// nothing and sets `error` for other formats or truncated data.
 std::optional<TextureSurface> untileXboxSurface(const QByteArray& tiled, quint32 formatWord, int width, int height,
     MipLayout layout = MipLayout::Unpacked, QString* error = nullptr);
 
 /// Decodes a surface to an image (ARGB32).
 QImage surfaceToImage(const TextureSurface& surface);
 
-/// Decodes the top mip level of an Xbox 360 texture file (.xds): a 52-byte
-/// header whose last 24 bytes are the GPU texture fetch constant, followed by
-/// the tiled texture data. Returns a null image and sets `error` on failure.
+/// Decodes the top mip level of an Xbox 360 texture file (.xds) with the xds
+/// library, with the swizzle of its fetch constant applied. Returns a null
+/// image and sets `error` on failure.
 QImage decodeXboxTexture(const QByteArray& data, QString* error = nullptr);
 
 /// Header of a track texture's `_0x<ID>.bix` file ("BIX1", big-endian).
@@ -89,36 +89,15 @@ std::optional<TextureSurface> readCaffSurface(const QByteArray& data, QString* e
 QImage decodeBixTexture(const QByteArray& header, const QByteArray& topLevel, QString* error = nullptr);
 QImage decodeCaffTexture(const QByteArray& data, QString* error = nullptr);
 
-namespace xenos {
-
-/// Byte offset of block (x, y) in a tiled surface whose row pitch is
-/// `pitchBlocks` (a multiple of 32) and whose blocks are 2^log2Bytes bytes.
-/// This is the Xbox 360 GPU's 2D tiling (XGAddress2DTiledOffset).
-quint32 tiledOffset(quint32 x, quint32 y, quint32 pitchBlocks, quint32 log2Bytes);
-
-/// Block position of the top level of a texture with packed mips. Levels 16
-/// texels or less on their shorter side share one 32x32-block tile, laid out
-/// along the shorter axis, and the top level of such a small texture starts
-/// 16 texels in. `blockSize` is 4 for DXT formats and 1 otherwise. Returns
-/// (0, 0) for larger textures. Checked against the game's own textures, whose
-/// small copies in `.bundle` packs match the full-size files only this way.
-QPoint packedBaseOffset(int width, int height, int blockSize);
-
-} // namespace xenos
-
 namespace dxt {
 
-/// One texel, as decoded from or encoded to a block.
+/// One texel, as encoded to a block.
 struct Rgba {
     std::uint8_t r = 0;
     std::uint8_t g = 0;
     std::uint8_t b = 0;
     std::uint8_t a = 255;
 };
-
-/// Decodes one block of `format` (DXT1, DXT3 or DXT5) into 16 texels in
-/// row-major order.
-void decodeBlock(TextureSurface::Format format, const std::uint8_t* block, Rgba* texels);
 
 /// Encodes 16 texels (row-major) as a DXT1 block. Texels with alpha below 128
 /// become transparent, using DXT1's three-colour mode.

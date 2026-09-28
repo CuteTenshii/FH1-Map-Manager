@@ -63,7 +63,7 @@ File → Save Edits (Ctrl+S) writes every edited file where you choose on the fi
 
 ## Build
 
-Requires CMake ≥ 3.21, a C++20 compiler, Qt ≥ 6.5 (Core, Gui, Widgets, Sql with the SQLite driver, Concurrent, OpenGL, OpenGLWidgets, Test), zlib, and a GPU with desktop OpenGL 3.3 for the 3D view.
+Requires CMake ≥ 3.21, a C++20 compiler, Qt ≥ 6.5 (Core, Gui, Widgets, Sql with the SQLite driver, Concurrent, OpenGL, OpenGLWidgets, Test), zlib, and a GPU with desktop OpenGL 3.3 for the 3D view. The first configure downloads [xds](https://git.tenshii.moe/Tenshii/xds), which decodes the game's textures; `-DFETCHCONTENT_SOURCE_DIR_XDS=/path/to/xds` builds against a local checkout instead.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -186,7 +186,7 @@ With these rules, all 230,057 entries of `tracks/colorado/bin.zip` and every oth
 
 **Packed mip tail.** Tiled textures 16 texels or less on their shorter side keep their top level inside a shared 32×32-block tile, 16 texels along the shorter axis (along X for square textures). The bundle copies match the full-size textures only with this offset, and it applies to small CAFF strips such as 256×16 too.
 
-**Xbox 360 textures (`.xds`).** A 52-byte header whose last 24 bytes are the GPU texture fetch constant: word 0 bit 31 = tiled; word 1 bits 0–5 = format, bits 6–7 = byte order; word 2 = (width − 1) | (height − 1) << 13. The top mip level follows, in the GPU's tiled block layout. DXT1/3/5 and 8_8_8_8 are decoded.
+**Xbox 360 textures (`.xds`).** A 52-byte header whose last 24 bytes are the GPU texture fetch constant: word 0 bit 31 = tiled; word 1 bits 0–5 = format, bits 6–7 = byte order; word 2 = (width − 1) | (height − 1) << 13. The top mip level follows, in the GPU's tiled block layout. The viewer decodes these, and the textures of the track containers below, with [xds](https://git.tenshii.moe/Tenshii/xds): DXT1/3/5 blocks go to the GPU as they are, 8_8_8_8, DXN (the normal maps of some lakes), DXT3A and DXT5A as decoded RGBA. The containers carry only the fetch constant's second word, so their textures are read with the plain swizzle and their 8_8_8_8 texels as A, R, G, B.
 
 ## Layout
 

@@ -12,6 +12,17 @@ option(FH1_BUILD_TESTS "Build the unit tests" ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent OpenGL OpenGLWidgets)
 find_package(ZLIB REQUIRED)
 
+# Xbox 360 texture decoding. To build against a local checkout instead,
+# configure with -DFETCHCONTENT_SOURCE_DIR_XDS=<path>.
+include(FetchContent)
+set(XDS_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(XDS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(xds
+    GIT_REPOSITORY https://git.tenshii.moe/Tenshii/xds.git
+    GIT_TAG 4b629ce25372b98e9aa0e5923d6352ba2dc904cf
+)
+FetchContent_MakeAvailable(xds)
+
 qt_standard_project_setup()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -76,7 +87,7 @@ add_library(fh1core STATIC
     src/core/ZoneGrid.h
 )
 target_include_directories(fh1core PUBLIC src/core)
-target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Concurrent ZLIB::ZLIB)
+target_link_libraries(fh1core PUBLIC Qt6::Core Qt6::Gui Qt6::Sql PRIVATE Qt6::Concurrent ZLIB::ZLIB xds::xds)
 
 # The viewer's widgets, kept in a library so the tests can exercise them.
 add_library(fh1viewer STATIC
@@ -147,8 +158,8 @@ if(FH1_BUILD_TESTS)
     fh1_add_test(tst_lzx fh1core)
     fh1_add_test(tst_forzazip fh1core ZLIB::ZLIB)
     fh1_add_test(tst_loaders fh1core)
-    fh1_add_test(tst_labels fh1core)
+    fh1_add_test(tst_labels fh1core xds::xds)
     fh1_add_test(tst_viewer fh1viewer)
-    fh1_add_test(tst_world fh1viewer ZLIB::ZLIB)
+    fh1_add_test(tst_world fh1viewer ZLIB::ZLIB xds::xds)
     fh1_add_test(tst_realdata fh1core)
 endif()

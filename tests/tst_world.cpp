@@ -29,6 +29,8 @@
 #include <QTest>
 #include <QtEndian>
 
+#include <xds/xds.h>
+
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -579,6 +581,25 @@ QByteArray hexFile(quint32 zones, quint32 columns, quint32 rows, const QList<qui
     return d;
 }
 
+/// The 16 texels of one DXT block of `format`, row by row.
+std::array<fh1::dxt::Rgba, 16> decodeBlock(fh1::TextureSurface::Format format, const std::uint8_t* block)
+{
+    fh1::TextureSurface surface;
+    surface.format = format;
+    surface.width = 4;
+    surface.height = 4;
+    surface.data = QByteArray(reinterpret_cast<const char*>(block), surface.blockBytes());
+    const QImage image = fh1::surfaceToImage(surface);
+    std::array<fh1::dxt::Rgba, 16> texels{};
+    for (int i = 0; i < 16; ++i) {
+        const QRgb pixel = image.pixel(i % 4, i / 4);
+        texels[static_cast<std::size_t>(i)]
+            = {static_cast<std::uint8_t>(qRed(pixel)), static_cast<std::uint8_t>(qGreen(pixel)),
+                static_cast<std::uint8_t>(qBlue(pixel)), static_cast<std::uint8_t>(qAlpha(pixel))};
+    }
+    return texels;
+}
+
 /// A 4x4-texel block of solid `colour`, as DXT1.
 QByteArray solidDxt1Block(QRgb colour)
 {
@@ -594,21 +615,25 @@ QByteArray solidDxt1Block(QRgb colour)
 
 /// DXT1 texture data in the Xbox 360 layout: tiled, 8-in-16 byte swapped, the
 /// top level of a small texture placed in the packed mip tail. `colourAt`
-/// gives each 4x4 block's colour.
+/// gives each 4x4 block's colour. Where the blocks go comes from xds.
 QByteArray tiledDxt1(int width, int height, const std::function<QRgb(int bx, int by)>& colourAt)
 {
-    const int blocksWide = std::max(1, width / 4);
-    const int blocksHigh = std::max(1, height / 4);
-    const auto pitch = static_cast<quint32>((blocksWide + 31) & ~31);
-    const QPoint start = fh1::xenos::packedBaseOffset(width, height, 4);
-    QByteArray tiled;
-    for (int by = 0; by < blocksHigh; ++by) {
-        for (int bx = 0; bx < blocksWide; ++bx) {
-            const auto offset = static_cast<qsizetype>(fh1::xenos::tiledOffset(
-                static_cast<quint32>(bx + start.x()), static_cast<quint32>(by + start.y()), pitch, 3));
-            if (tiled.size() < offset + 8) {
-                tiled.resize(offset + 8, '\0');
-            }
+    xds::TextureInfo info;
+    info.format = static_cast<std::uint32_t>(xds::Format::kDxt1);
+    info.endian = xds::Endian::Swap8In16;
+    info.tiled = true;
+    info.packedMips = true;
+    info.width = static_cast<std::uint32_t>(width);
+    info.height = static_cast<std::uint32_t>(height);
+    info.pitch = 128;
+    const xds::LevelLayout layout
+        = xds::Texture::fromData(info, std::vector<std::uint8_t>(std::size_t{1} << 20)).levelLayout(0);
+    QByteArray tiled(static_cast<qsizetype>(layout.surfaceSize), '\0');
+    for (int by = 0; by < static_cast<int>(layout.blocksHigh); ++by) {
+        for (int bx = 0; bx < static_cast<int>(layout.blocksWide); ++bx) {
+            const auto offset
+                = static_cast<qsizetype>(xds::tiledOffset2D(static_cast<quint32>(bx) + layout.offsetXBlocks,
+                    static_cast<quint32>(by) + layout.offsetYBlocks, layout.surfacePitchBlocks, 3));
             const QByteArray block = solidDxt1Block(colourAt(bx, by));
             for (int i = 0; i < 8; i += 2) {
                 tiled[offset + i] = block[i + 1];
@@ -857,16 +882,6 @@ private slots:
 
     void placesSmallTexturesInThePackedMipTail()
     {
-        QCOMPARE(fh1::xenos::packedBaseOffset(16, 16, 4), QPoint(4, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(4, 4, 4), QPoint(4, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(8, 16, 4), QPoint(4, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(16, 8, 4), QPoint(0, 4));
-        QCOMPARE(fh1::xenos::packedBaseOffset(256, 16, 4), QPoint(0, 4));
-        QCOMPARE(fh1::xenos::packedBaseOffset(8, 256, 4), QPoint(4, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(16, 16, 1), QPoint(16, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(32, 32, 4), QPoint(0, 0));
-        QCOMPARE(fh1::xenos::packedBaseOffset(512, 32, 4), QPoint(0, 0));
-
         // A 16x8 texture sits below the tail's first 16 texel rows.
         const auto colourAt = [](int bx, int by) { return qRgb(bx * 60, by * 120, 30); };
         const QByteArray tiled = tiledDxt1(16, 8, colourAt);
@@ -1447,9 +1462,8 @@ private slots:
             gradient[static_cast<std::size_t>(i)] = {v, static_cast<std::uint8_t>(255 - v), 64, v};
         }
         std::array<std::uint8_t, 16> block{};
-        std::array<fh1::dxt::Rgba, 16> decoded{};
         fh1::dxt::encodeDxt5(gradient.data(), block.data());
-        fh1::dxt::decodeBlock(fh1::TextureSurface::Format::Dxt5, block.data(), decoded.data());
+        std::array<fh1::dxt::Rgba, 16> decoded = decodeBlock(fh1::TextureSurface::Format::Dxt5, block.data());
         // Four palette colours across a 240-step gradient leave errors of up
         // to a sixth of the range; an encoder that collapsed the block onto
         // its mean colour would be off by 64 on average.
@@ -1468,7 +1482,7 @@ private slots:
             cutout[i] = {200, 40, 40, static_cast<std::uint8_t>(i % 2 == 0 ? 255 : 0)};
         }
         fh1::dxt::encodeDxt1(cutout.data(), block.data());
-        fh1::dxt::decodeBlock(fh1::TextureSurface::Format::Dxt1, block.data(), decoded.data());
+        decoded = decodeBlock(fh1::TextureSurface::Format::Dxt1, block.data());
         for (std::size_t i = 0; i < 16; ++i) {
             QCOMPARE(decoded[i].a, static_cast<std::uint8_t>(i % 2 == 0 ? 255 : 0));
             if (i % 2 == 0) {
